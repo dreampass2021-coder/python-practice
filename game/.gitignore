@@ -1,0 +1,3 @@
+# Ursina が 自動で コピーする Windows の フォント（配布できないので のせない）
+*.ttc
+__pycache__/
