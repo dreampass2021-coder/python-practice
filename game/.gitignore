@@ -1,3 +1,6 @@
 # Ursina が 自動で コピーする Windows の フォント（配布できないので のせない）
 *.ttc
+# 起動すると 自動で 作られる もの
+sounds/
+lava_craft_3d_best.json
 __pycache__/
