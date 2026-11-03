@@ -20,6 +20,12 @@
 #    Esc      … メニュー（もどる / 全画面 / やめる）
 #    F11      … 全画面 ⇔ ウィンドウ を 切りかえる（いつでも）
 #
+#  デバッグモード（テスト用）: run_3d_debug.bat か「python lava_craft_3d.py --debug」で 起動すると 使える
+#    F1 資材・コイン +50 と HP まんたん   F2 無敵 ON/OFF        F3 10m 上へ ワープ
+#    F4 次の エリアへ ワープ               F5 溶岩 止める/動かす  F6 敵を 出す
+#    F7 鍵の 宝箱の 高さへ ワープ          F8 くわしい 情報を 表示
+#    ※デバッグモードでは ベストスコアを 保存しない
+#
 #  プログラムの つくり（上から 順番に 読めば わかるように 並べてある）
 #    ① 準備        … Ursina を 起動して、フォント・効果音・テクスチャを 用意する
 #    ② 設定        … ゲームの 数字（速さ・高さ・敵・ショップ など）を まとめた所
@@ -37,6 +43,7 @@ import os
 import random
 import shutil
 import struct
+import sys
 import wave
 
 from PIL import Image                                  # テクスチャを 作るのに 使う（Ursina と いっしょに 入る）
@@ -287,6 +294,7 @@ DIFFICULTIES = [
     ('むずかしい', 1.4, 12, {'wood': 3, 'stone': 3, 'iron': 0}),
 ]
 BEST_FILE = os.path.join(HERE, 'lava_craft_3d_best.json')
+DEBUG = '--debug' in sys.argv           # デバッグモード（F1〜F8 の テスト用キー）
 
 # エリア: (はじまる 高さ m, 名前, 空の色, 資材の 出やすさ, 霧の こさ)
 #   鉄は 大事な 鉱石なので 少なめ。そのかわり まわりを くず石で 囲ってある
@@ -982,7 +990,7 @@ def mine(target):
 
 def hurt(cause):
     """ダメージを 受ける。cause は 'rock' / 'enemy'（ゲームオーバーの ヒントに 使う）"""
-    if g.invincible > 0:
+    if g.invincible > 0 or g.god:
         return
     g.invincible = 1.5
     if g.shield:                                        # シールドで 1回 ふせぐ
@@ -1017,6 +1025,11 @@ def ride_jet():
 
 def end_jet():
     """ジェット機が 終わったら、ブロックの 中なら 上へ 出して、足の下に 石の 足場を 作る"""
+    land_safely()
+
+
+def land_safely():
+    """ブロックの 中なら 上へ 出して、足の下に 石の 足場（3×3）を 作る（ジェット機・ワープの あと）"""
     player.gravity = 1
     px, pz = round(player.x), round(player.z)
     y = round(player.y)
@@ -1135,6 +1148,9 @@ def new_game():
     g.radar = 0
     g.free_jet = 0
     g.last_hit = 'lava'
+    g.god = False                                       # デバッグ: 無敵
+    g.debug_lava = False                                # デバッグ: 溶岩を 止める
+    g.debug_info = False                                # デバッグ: 情報を 表示
     player.position = (0, 1, 0)
     player.rotation = (0, 0, 0)
     player.gravity = 1
@@ -1148,7 +1164,7 @@ def show_title():
     for i, (name, *_) in enumerate(DIFFICULTIES):
         mark = '▶ ' if i == g.diff else '   '
         lines.append(f'{mark}{i + 1}. {name}   ベスト {best.get(name, 0)}')
-    big_text.text = 'LAVA CRAFT 3D'
+    big_text.text = 'LAVA CRAFT 3D' + ('  [デバッグ]' if DEBUG else '')
     big_text.color = color.hex('#ffc850')
     sub_text.text = ('～ 天国まで 逃げろ！ ～   かべの 奥に 鍵が 3つ…？\n\n' + '\n'.join(lines) +
                      '\n\n1 / 2 / 3 で むずかしさを えらんで、クリック か Enter で スタート\n\n'
@@ -1209,7 +1225,7 @@ def finish(result):
     score = (int(g.time) + g.best * 10 + g.placed * 2 + g.kills * 20 + g.keys * 300
              + (500 if result == 'clear' else 0) + (1000 if true_end else 0))
     best = load_best()
-    record = score > best.get(name, 0)
+    record = score > best.get(name, 0) and not DEBUG     # デバッグ中は 記録しない
     if record:
         best[name] = score
         save_best(best)
@@ -1348,6 +1364,64 @@ def buy(n):
     refresh_shop()
 
 
+# デバッグ（テスト用の キー）: DEBUG が True の ときだけ 使える
+debug_text = Text(position=(-0.86, 0.33), scale=0.9, color=color.hex('#9cff9c'), enabled=False)
+
+
+def warp(h):
+    """高さ h m へ ワープ（まわりの だんを 作ってから、安全な 足場に おろす）"""
+    g.lift = None
+    g.jet = 0
+    player.y = min(h, GOAL - 1) + 0.5
+    generate()
+    land_safely()
+
+
+def debug_key(key):
+    if key == 'f1':
+        for m in MATERIALS:
+            g.items[m] += 50
+        g.coins += 50
+        g.hp = MAX_HP
+        say('デバッグ: 資材・コイン +50、HP まんたん')
+    elif key == 'f2':
+        g.god = not g.god
+        say('デバッグ: 無敵 ' + ('ON' if g.god else 'OFF'))
+    elif key == 'f3':
+        warp(height() + 10)
+        say('デバッグ: 10m 上へ ワープ')
+    elif key == 'f4':
+        nxt = [a[0] for a in AREAS if a[0] > height()]
+        warp(nxt[0] + 1 if nxt else GOAL - 2)
+        say(f'デバッグ: {area_at(height())[1]}へ ワープ')
+    elif key == 'f5':
+        g.debug_lava = not g.debug_lava
+        say('デバッグ: 溶岩 ' + ('ストップ' if g.debug_lava else 'うごく'))
+    elif key == 'f6':
+        spawn_enemy()
+        say(f'デバッグ: {ENEMY_TYPES[area_at(height())[1]][0]}を 出した')
+    elif key == 'f7':
+        left = [h for h in g.key_heights if h > height() + 1]
+        if left:
+            warp(left[0])
+            say(f'デバッグ: 鍵の 宝箱の 高さ {left[0]}m へ ワープ（かべを さがそう）')
+        else:
+            say('デバッグ: この上に 鍵は ない')
+    elif key == 'f8':
+        g.debug_info = not g.debug_info
+        debug_text.enabled = g.debug_info
+
+
+def update_debug_text():
+    if not g.debug_info:
+        return
+    debug_text.text = (f'[デバッグ]  FPS {int(1 / max(time.dt, 0.001))}\n'
+                       f'位置 ({player.x:.1f}, {player.y:.1f}, {player.z:.1f})  溶岩 {g.lava_y:.1f}\n'
+                       f'ブロック {len(blocks)}  けしき {len(scenery)}  敵 {len(enemies)}\n'
+                       f'鍵の 高さ {g.key_heights}  のこり宝箱 {[c[1] for c in chests]}\n'
+                       f'無敵 {"ON" if g.god else "OFF"}  溶岩 {"ストップ" if g.debug_lava else "うごく"}')
+
+
 # ============================================================
 # ⑧ input(): キー・マウスを おした しゅんかんに よばれる
 # ============================================================
@@ -1374,6 +1448,9 @@ def input(key):
             show_title()
         elif key in ('left mouse down', 'enter'):
             start()
+        return
+    if DEBUG and g.state == 'play' and key in ('f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'):
+        debug_key(key)
         return
     if g.state in ('over', 'clear'):
         if key == 'r':
@@ -1454,7 +1531,7 @@ def update():
     # 溶岩が 上がる（時間が たつほど 速い。ときどき 波）
     if g.lava_stop > 0:
         g.lava_stop -= dt                               # ショップの 溶岩ストップ
-    elif g.time > delay:
+    elif g.time > delay and not g.debug_lava:
         speed = min(LAVA_START_SPEED + LAVA_ACCEL * (g.time - delay), LAVA_MAX_SPEED) * mult
         g.wave_timer -= dt
         if g.wave is None and g.wave_timer <= 0:
@@ -1627,9 +1704,14 @@ def update():
     g.message_time -= dt
     message_text.enabled = g.message_time > 0
 
+    if DEBUG:
+        update_debug_text()
+
     # 勝ち・負け
     if height() >= GOAL:
         finish('clear')
+    elif g.god and player.y < g.lava_y:                 # デバッグの 無敵: 溶岩の 上に もどす
+        warp(int(g.lava_y) + 3)
     elif player.y < g.lava_y or g.hp <= 0:
         finish('over')
 
