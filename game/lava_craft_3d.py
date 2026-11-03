@@ -143,6 +143,9 @@ def sfx(name):
 # テクスチャ: 画像ファイルは 使わず、16×16 の ドット絵を プログラムで 描く
 #   random.Random(名前) を 使うので、毎回 同じ 絵に なる
 def make_texture(kind):
+    moss = kind.endswith('_moss')                       # 'stone_moss' など = こけが 生えた 版
+    if moss:
+        kind = kind[:-5]
     rnd = random.Random(kind)
     img = Image.new('RGB', (16, 16))
     px = img.load()
@@ -203,6 +206,11 @@ def make_texture(kind):
             put(x, y, (255, 235, 130))
         put(7, 7, (50, 30, 20))
         put(8, 8, (50, 30, 20))
+    if moss:                                            # 緑の こけを 散らす（上の ほうに 多め）
+        mr = random.Random(kind + 'moss')
+        for _ in range(70):
+            x, y = mr.randrange(16), int(abs(mr.gauss(0, 5))) % 16
+            put(x, y, mr.choice([(70, 140, 60), (90, 165, 70), (60, 120, 55)]))
     for i in range(16):                                 # ふちを 少し 暗く（さかい目が 分かる）
         for x, y in ((i, 0), (i, 15), (0, i), (15, i)):
             r, gg, b = px[x, y]
@@ -212,7 +220,28 @@ def make_texture(kind):
     return t
 
 
-TEXTURES = {k: make_texture(k) for k in ('stone', 'wood', 'iron', 'rubble', 'cloud', 'gold', 'ground', 'chest')}
+TEXTURES = {k: make_texture(k) for k in ('stone', 'wood', 'iron', 'rubble', 'cloud', 'gold', 'ground', 'chest',
+                                         'stone_moss', 'wood_moss', 'rubble_moss')}
+
+
+# 空（スカイドーム）の テクスチャ: 上から下への グラデーション。洞窟には 光る 粒（ツチボタル）を 散らす
+def make_sky_texture(top, mid, bottom, dots=None):
+    rnd = random.Random(top)
+    w, h = 64, 256
+    img = Image.new('RGB', (w, h))
+    px = img.load()
+    cols = [tuple(int(top[i:i + 2], 16) for i in (1, 3, 5)) for top in (top, mid, bottom)]
+    for y in range(h):
+        u = y / (h - 1)                                 # 0 = 上、1 = 下
+        a, b, k = (cols[0], cols[1], u * 2) if u < 0.5 else (cols[1], cols[2], u * 2 - 1)
+        c = tuple(int(a[i] + (b[i] - a[i]) * k) for i in range(3))
+        for x in range(w):
+            px[x, y] = c
+    if dots:
+        for _ in range(160):
+            x, y = rnd.randrange(w), int(rnd.random() ** 1.5 * h * 0.55)
+            px[x, y] = rnd.choice(dots)
+    return Texture(img)
 
 
 # ============================================================
@@ -299,10 +328,17 @@ DEBUG = '--debug' in sys.argv           # デバッグモード（F1〜F8 の �
 # エリア: (はじまる 高さ m, 名前, 空の色, 資材の 出やすさ, 霧の こさ)
 #   鉄は 大事な 鉱石なので 少なめ。そのかわり まわりを くず石で 囲ってある
 AREAS = [
-    (0,  '洞窟', color.hex('#100c22'), {'wood': 0.20, 'stone': 0.68, 'iron': 0.12}, 0.055),
-    (30, '森',   color.hex('#3f7a6a'), {'wood': 0.60, 'stone': 0.30, 'iron': 0.10}, 0.035),
-    (60, '空',   color.hex('#6aa2ee'), {'wood': 0.25, 'stone': 0.50, 'iron': 0.25}, 0.014),
-    (90, '天国', color.hex('#ffe2c0'), {'wood': 0.20, 'stone': 0.50, 'iron': 0.30}, 0.022),
+    (0,  '洞窟', color.hex('#1c1238'), {'wood': 0.20, 'stone': 0.68, 'iron': 0.12}, 0.045),
+    (30, '森',   color.hex('#5d9a80'), {'wood': 0.60, 'stone': 0.30, 'iron': 0.10}, 0.030),
+    (60, '空',   color.hex('#8fbcf5'), {'wood': 0.25, 'stone': 0.50, 'iron': 0.25}, 0.012),
+    (90, '天国', color.hex('#fff0d6'), {'wood': 0.20, 'stone': 0.50, 'iron': 0.30}, 0.018),
+]
+# エリアごとの 空の グラデーション（上・まんなか・下）
+SKY_TEXTURES = [
+    make_sky_texture('#04020c', '#1c1238', '#3a1a5c', dots=[(110, 240, 255), (190, 140, 255), (255, 150, 230), (150, 255, 220)]),
+    make_sky_texture('#173f4f', '#5d9a80', '#e4ecb0'),
+    make_sky_texture('#1f4fcf', '#8fbcf5', '#eef6ff'),
+    make_sky_texture('#ffb88a', '#fff0d6', '#ffffff', dots=[(255, 240, 180), (255, 255, 255)]),
 ]
 BLOCK_COLOR = {                         # かけら・手に 持つ ブロックの 色
     'ground': color.hex('#5a5664'),
@@ -372,16 +408,15 @@ class Block(Entity):
 
     def decorate(self, area):
         """自然の ブロックに、エリアらしい かざりを つける（子どもの Entity なので、ほると いっしょに 消える）"""
-        if area == '洞窟' and self.kind in ('stone', 'iron', 'rubble') and random.random() < 0.15:
-            for _ in range(random.randint(1, 3)):     # 光る 結晶
+        if area == '洞窟' and self.kind in ('stone', 'iron', 'rubble') and random.random() < 0.08:
+            for _ in range(random.randint(1, 2)):     # 光る 結晶
                 Entity(parent=self, model='diamond', color=random.choice(CRYSTAL_COLORS),
                        position=(random.uniform(-0.3, 0.3), 0.62, random.uniform(-0.3, 0.3)),
                        scale=(0.14, random.uniform(0.3, 0.55), 0.14),
                        rotation=(random.uniform(-25, 25), random.uniform(0, 90), random.uniform(-25, 25)))
-        elif area == '森' and self.kind in ('stone', 'wood', 'rubble') and random.random() < 0.55:
-            Entity(parent=self, model='cube', color=color.hex(random.choice(('#4f9a4a', '#5fae52', '#3f8a44'))),
-                   position=(0, 0.47, 0), scale=(1.03, 0.08, 1.03))          # こけ
-            if random.random() < 0.3:                   # たれさがる ツタ
+        elif area == '森' and self.kind in ('stone', 'wood', 'rubble') and random.random() < 0.6:
+            self.texture = TEXTURES[self.kind + '_moss']   # こけ（テクスチャを かえるだけなので 軽い）
+            if random.random() < 0.08:                  # たれさがる ツタ
                 Entity(parent=self, model='cube', color=color.hex('#3f8a44'),
                        position=(random.uniform(-0.4, 0.4), -0.2, random.choice((-0.52, 0.52))),
                        scale=(0.08, random.uniform(0.8, 1.6), 0.02))
@@ -487,6 +522,8 @@ def make_layer(y):
         make_scenery(y)
     if y == 96:
         make_rainbow(y)
+    if y in (1, 30, 60, 90):                            # エリアの はじまりで、遠くの 大きな けしき
+        make_vista(y)
 
 
 # たて穴の 外に 出られないように する 見えない かべ
@@ -611,6 +648,56 @@ def make_rainbow(y):
             e.alpha = 0.7
 
 
+def make_vista(y0):
+    """遠くの 大きな けしき（エリアに 1回だけ 作る）。たて穴を ぐるっと かこむ"""
+    area = area_at(y0)[1]
+    top = y0 + 30                                       # この 高さまで 溶岩が 来たら 消す
+
+    def ring(n, r1, r2):
+        for i in range(n):
+            a = math.tau * (i + random.uniform(-0.3, 0.3)) / n
+            r = random.uniform(r1, r2)
+            yield math.cos(a) * r, math.sin(a) * r
+
+    if area == '洞窟':
+        for x, z in ring(12, 22, 30):                  # 大きな 岩の 柱
+            h = random.uniform(30, 42)
+            e = deco(top, model=make_shaded_cube(), texture=TEXTURES['stone'], color=color.hex('#3a2f55'),
+                     position=(x, y0 + h / 2 - 4, z), scale=(random.uniform(4, 7), h, random.uniform(4, 7)),
+                     rotation=(0, random.uniform(0, 90), 0))
+            e.vista = True
+        for x, z in ring(10, 18, 24):                  # 柱に 光る 大きな 結晶
+            e = deco(top, model='diamond', color=random.choice(CRYSTAL_COLORS),
+                     position=(x, y0 + random.uniform(2, 26), z), scale=(1.2, random.uniform(3, 6), 1.2),
+                     rotation=(random.uniform(-30, 30), random.uniform(0, 90), random.uniform(-30, 30)))
+            e.vista = True
+    elif area == '森':
+        for x, z in ring(14, 22, 32):                  # 大きな 木の 森
+            h = random.uniform(22, 32)
+            e = deco(top, model=make_shaded_cube(), texture=TEXTURES['wood'], color=color.hex('#6a4a32'),
+                     position=(x, y0 + h / 2 - 6, z), scale=(1.8, h, 1.8))
+            e.vista = True
+            e = deco(top, model=make_shaded_cube(), color=color.hex(random.choice(('#2f6b3f', '#3a7a46', '#2a5f3a'))),
+                     position=(x, y0 + h - 6, z), scale=(random.uniform(7, 10), random.uniform(5, 8), random.uniform(7, 10)))
+            e.vista = True
+    elif area == '空':
+        for x, z in ring(12, 24, 40):                  # 雲の 海
+            e = deco(top, model=make_shaded_cube(), color=color.hex('#ffffff'),
+                     position=(x, y0 + random.uniform(-3, 18), z),
+                     scale=(random.uniform(10, 18), random.uniform(1.5, 3), random.uniform(6, 12)))
+            e.vista = True
+            e.alpha = 0.9
+    else:
+        for x, z in ring(8, 16, 24):                   # 天から おりる 光の 柱
+            e = deco(top, model='cube', color=color.hex('#fff2b0'), position=(x, y0 + 25, z), scale=(2, 60, 2))
+            e.alpha = 0.18
+            e.vista = True
+        for x, z in ring(6, 20, 28):                   # 金の 浮島
+            e = deco(top, model=make_shaded_cube(), texture=TEXTURES['gold'], position=(x, y0 + random.uniform(4, 22), z),
+                     scale=(random.uniform(3, 5), 1, random.uniform(3, 5)))
+            e.vista = True
+
+
 def make_gate(y):
     """天国の 門（2本の 柱と 横の はり）"""
     for x in (-2, 2):
@@ -638,9 +725,30 @@ def update_scenery(dt):
             e.y = e.base_y + math.sin(time.time() * 1.5 + e.x) * 0.4
 
 
+# 空（2まい 重ねて、エリアが かわると 上の 1まいを ゆっくり 入れかえる）
+sky = Sky(texture=SKY_TEXTURES[0])
+sky_fade = Sky(texture=SKY_TEXTURES[0])
+sky_fade.scale = sky.scale_x * 0.98
+sky_fade.alpha = 0
+for s_ in (sky, sky_fade):
+    s_.setFogOff()                                      # 空には 霧を かけない
+
+
+def update_sky(dt, idx):
+    """エリア idx の 空へ ゆっくり 入れかえる"""
+    if sky_fade.alpha == 0 and sky.texture != SKY_TEXTURES[idx]:
+        sky_fade.texture = SKY_TEXTURES[idx]
+        sky_fade.alpha = 0.01
+    elif sky_fade.alpha > 0:
+        sky_fade.alpha = min(1, sky_fade.alpha + dt * 0.6)
+        if sky_fade.alpha >= 1:
+            sky.texture = sky_fade.texture
+            sky_fade.alpha = 0
+
+
 # まわりを ただよう 光の粒（エリアで 変わる: 洞窟=ホタル、森=葉っぱ、空=風のつぶ、天国=光）
 motes = []
-for _ in range(36):
+for _ in range(26):
     m = Entity(model='quad', billboard=True, scale=0.08)
     m.life = 0
     m.v = Vec3(0, 0, 0)
@@ -739,6 +847,12 @@ class State:
 g = State()
 g.diff = 1                                              # むずかしさ（DIFFICULTIES の 番号）
 g.key_heights = []
+
+
+def set_text(t, value):
+    """文字が かわった ときだけ 書きかえる（Text は 書きかえるたびに 作りなおすので 重い）"""
+    if t.text != value:
+        t.text = value
 
 
 def say(text, time=2.5):
@@ -1148,6 +1262,7 @@ def new_game():
     g.radar = 0
     g.free_jet = 0
     g.last_hit = 'lava'
+    g.cull_timer = 0
     g.god = False                                       # デバッグ: 無敵
     g.debug_lava = False                                # デバッグ: 溶岩を 止める
     g.debug_info = False                                # デバッグ: 情報を 表示
@@ -1171,6 +1286,8 @@ def show_title():
                      'WASD 移動 ・ 左クリック長押し ほる ・ 右クリック 置く ・ Q 真下に 積む\n'
                      'F 剣 ・ B ショップ ・ C ジェット機 ・ F11 全画面')
     camera.background_color = AREAS[0][2]
+    sky.texture = SKY_TEXTURES[0]
+    sky_fade.alpha = 0
     show_mining(False)
     big_text.enabled = sub_text.enabled = panel.enabled = True
     for e in hud:
@@ -1193,6 +1310,10 @@ def generate():
     while g.top_layer < min(player.y + 16, GOAL):
         g.top_layer += 1
         make_layer(g.top_layer)
+    g.cull_timer -= time.dt
+    if g.cull_timer > 0:                                # 下の 片づけは 0.3秒に 1回（毎フレームだと 重い）
+        return
+    g.cull_timer = 0.3
     for pos in [p for p in blocks if p[1] < g.lava_y - 4]:
         remove_block(pos)
     for c in [c for c in chests if c[1] < g.lava_y - 4]:
@@ -1203,6 +1324,17 @@ def generate():
     for item in [s for s in scenery if s[0] < g.lava_y - 8]:
         scenery.remove(item)
         destroy(item[1])
+    # 遠くの ブロック・かざりは 表示しない（見えない 所を 描かないと 軽くなる）
+    lo, hi = player.y - 14, player.y + 18
+    for (x, y, z), b in blocks.items():
+        want = lo <= y <= hi
+        if b.enabled != want:
+            b.enabled = want
+    for y, e in scenery:
+        if not getattr(e, 'vista', False):
+            want = lo - 4 <= y <= hi + 4
+            if e.enabled != want:
+                e.enabled = want
 
 
 def height():
@@ -1415,9 +1547,13 @@ def debug_key(key):
 def update_debug_text():
     if not g.debug_info:
         return
-    debug_text.text = (f'[デバッグ]  FPS {int(1 / max(time.dt, 0.001))}\n'
+    g.debug_t = getattr(g, 'debug_t', 0) - time.dt
+    if g.debug_t > 0:                                   # 0.5秒に 1回だけ 書きかえる
+        return
+    g.debug_t = 0.5
+    set_text(debug_text, f'[デバッグ]  FPS {int(1 / max(time.dt, 0.001))}\n'
                        f'位置 ({player.x:.1f}, {player.y:.1f}, {player.z:.1f})  溶岩 {g.lava_y:.1f}\n'
-                       f'ブロック {len(blocks)}  けしき {len(scenery)}  敵 {len(enemies)}\n'
+                       f'ブロック {len(blocks)}（表示 {sum(b.enabled for b in blocks.values())}）  けしき {len(scenery)}  敵 {len(enemies)}\n'
                        f'鍵の 高さ {g.key_heights}  のこり宝箱 {[c[1] for c in chests]}\n'
                        f'無敵 {"ON" if g.god else "OFF"}  溶岩 {"ストップ" if g.debug_lava else "うごく"}')
 
@@ -1527,6 +1663,7 @@ def update():
     camera.background_color = lerp(camera.background_color, area[2], min(1, dt * 1.5))
     scene.fog_color = camera.background_color
     scene.fog_density = area[4]
+    update_sky(dt, AREAS.index(area))
 
     # 溶岩が 上がる（時間が たつほど 速い。ときどき 波）
     if g.lava_stop > 0:
@@ -1674,29 +1811,29 @@ def update():
     # 画面の 文字
     g.invincible = max(0, g.invincible - dt)
     hurt_flash.alpha = max(0, hurt_flash.alpha - dt)
-    height_text.text = f'{height()} m / {GOAL} m   {area[1]}'
-    hp_text.text = '♥' * g.hp + '♡' * (MAX_HP - g.hp) + ('  ◆シールド' if g.shield else '')
-    item_text.text = '   '.join(('▶' if i == g.mat else '  ') + f'{NAME[m]} {g.items[m]}' for i, m in enumerate(MATERIALS))
+    set_text(height_text, f'{height()} m / {GOAL} m   {area[1]}')
+    set_text(hp_text, '♥' * g.hp + '♡' * (MAX_HP - g.hp) + ('  ◆シールド' if g.shield else ''))
+    set_text(item_text, '   '.join(('▶' if i == g.mat else '  ') + f'{NAME[m]} {g.items[m]}' for i, m in enumerate(MATERIALS)))
     ok = g.free_jet > 0 or all(g.items[k] >= v for k, v in JET_COST.items())
-    jet_text.text = 'ジェット機: C で 発進！' if ok else f'ジェット機: 石{JET_COST["stone"]}・鉄{JET_COST["iron"]} で 乗れる'
-    coin_text.text = f'コイン {g.coins}  (B ショップ)   鍵 ' + '●' * g.keys + '○' * (3 - g.keys)
+    set_text(jet_text, 'ジェット機: C で 発進！' if ok else f'ジェット機: 石{JET_COST["stone"]}・鉄{JET_COST["iron"]} で 乗れる')
+    set_text(coin_text, f'コイン {g.coins}  (B ショップ)   鍵 ' + '●' * g.keys + '○' * (3 - g.keys))
     if g.radar > 0:
         g.radar -= dt
-        radar_text.text = key_direction()
+        set_text(radar_text, key_direction())
     else:
-        radar_text.text = ''
+        set_text(radar_text, '')
         for e in enemies:                               # 見えない 所の 敵を 知らせる
             d = e.position - camera.world_position
             if d.length() < 5 and d.normalized().dot(camera.forward) < 0.3:
-                radar_text.text = '後ろに 敵！'
+                set_text(radar_text, '後ろに 敵！')
                 break
     gap = player.y - g.lava_y
     if g.lava_stop > 0:
-        lava_text.text = f' 溶岩ストップ中 あと {int(g.lava_stop) + 1} 秒 '
+        set_text(lava_text, f' 溶岩ストップ中 あと {int(g.lava_stop) + 1} 秒 ')
     elif g.time < delay:
-        lava_text.text = f' 溶岩が 動きだすまで あと {int(delay - g.time) + 1} 秒 '
+        set_text(lava_text, f' 溶岩が 動きだすまで あと {int(delay - g.time) + 1} 秒 ')
     else:
-        lava_text.text = f' 溶岩まで {max(0, int(gap))} m '
+        set_text(lava_text, f' 溶岩まで {max(0, int(gap))} m ')
     lava_text.color = color.hex('#ff7850') if gap < 6 else color.white
     lava_glow.alpha = max(0, min(0.35, (6 - gap) / 15))
     bar_fill.scale_y = max(0.001, 0.6 * min(1, height() / GOAL))
