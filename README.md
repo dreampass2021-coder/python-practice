@@ -45,6 +45,13 @@ Version 2 の行の例:
 | 追加 | `+ def make_sound(path, kind, notes, rate=22050):` | 効果音を作る関数 |
 | 削除 | `- window.fps_counter.enabled = True` | 開発中に使っていた FPS 表示 |
 
+Version 3 のあとの追加:
+
+- ブロックのかたさ（長押しでほる）、面ごとの明るさ（上下が見やすい）、鉄のまわりのくず石
+- F11 で全画面
+- テクスチャ（ドット絵をプログラムで描く）、エリアごとのけしきと光の粒・霧
+- Q で真下に積む、敵と剣、コインで買うショップ、かくれた鍵 3つと真エンディング、やられたときのヒント
+
 変更の中身は、[Commits](https://github.com/dreampass2021-coder/python-practice/commits/main) から各コミットを開くと、緑（追加）と赤（削除）の行で見られます。
 
 ## 使ったもの

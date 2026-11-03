@@ -5,24 +5,29 @@
 #  かべや 浮き島の ブロックを ほって 資材を あつめ、
 #  ブロックを 置いて 足場を 作りながら 上へ 上へ にげる。
 #  高さ 120m の 天国の 門に 着いたら クリア！
+#  とちゅうの かべの 奥には 鍵が 3つ かくれている。全部 見つけて クリアすると…？
 #
 #  操作:
 #    WASD     … 移動          マウス … 見回す       Space … ジャンプ
 #    左クリック … おしつづけて ブロックを ほる（かたい ブロックほど 時間が かかる）
-#    右クリック … ブロックを 置く（真下を 向いて ジャンプ中に 置くと 上に のぼれる）
+#    右クリック … ブロックを 置く
+#    Q        … 自分の 真下に ブロックを 積んで 1だん 上がる（おしつづけると 連続）
+#               ※真下を 見て 右クリックを おしつづけても 同じ
+#    F        … 剣を ふる（敵を たおすと コインが もらえる）
+#    B        … ショップ（コインで お助けアイテムを 買う）
 #    1 / 2 / 3 … 置く 材料を えらぶ（木・石・鉄）   ※タイトルでは むずかしさを えらぶ
 #    C        … ジェット機（石と鉄を 使って 一気に 上へ）
 #    Esc      … メニュー（もどる / 全画面 / やめる）
 #    F11      … 全画面 ⇔ ウィンドウ を 切りかえる（いつでも）
 #
 #  プログラムの つくり（上から 順番に 読めば わかるように 並べてある）
-#    ① 準備        … Ursina を 起動して、日本語の フォントと 効果音を 用意する
-#    ② 設定        … ゲームの 数字（速さ・高さ など）を まとめた所
+#    ① 準備        … Ursina を 起動して、フォント・効果音・テクスチャを 用意する
+#    ② 設定        … ゲームの 数字（速さ・高さ・敵・ショップ など）を まとめた所
 #    ③ ブロック    … Block クラスと、たて穴を 作る 関数
-#    ④ けしき      … エリアごとの かざり（結晶・木・雲・柱）と 天国の 門
+#    ④ けしき      … エリアごとの かざり と、まわりを ただよう 光の粒
 #    ⑤ プレイヤーと 画面の 文字
-#    ⑥ 落石・回復の実・ジェット機・小さな 演出
-#    ⑦ ゲームの 流れ（タイトル・スタート・ゲームオーバー・メニュー）
+#    ⑥ 落石・敵・剣・回復の実・ジェット機・真下に積む・小さな 演出
+#    ⑦ ゲームの 流れ（タイトル・スタート・ゲームオーバー・メニュー・ショップ）
 #    ⑧ input()  … キー・マウスを おしたとき（Ursina が 自動で よぶ）
 #    ⑨ update() … 毎フレーム（1秒に 約60回）よばれる
 # ============================================================
@@ -34,9 +39,9 @@ import shutil
 import struct
 import wave
 
+from PIL import Image                                  # テクスチャを 作るのに 使う（Ursina と いっしょに 入る）
 from ursina import *
 from ursina.prefabs.first_person_controller import FirstPersonController
-from ursina.shaders import basic_lighting_shader      # 光の 向きで 面の 明るさを 変える（立体に 見える）
 
 
 # ============================================================
@@ -76,6 +81,11 @@ SOUNDS = {
     'over':  ('sine',   [(392, 0.18), (330, 0.18), (262, 0.4)]),
     'pick':  ('sine',   [(990, 0.05)]),
     'tick':  ('noise',  [(0, 0.03)]),                      # ほっている 途中の コツコツ音
+    'swing': ('noise',  [(0, 0.09)]),                      # 剣を ふる 音
+    'hit':   ('square', [(330, 0.04), (220, 0.05)]),       # 敵に 当たった 音
+    'coin':  ('sine',   [(1320, 0.05), (1760, 0.09)]),     # コインが 入った 音
+    'key':   ('sine',   [(784, 0.1), (988, 0.1), (1319, 0.25)]),   # 鍵を 見つけた 音
+    'buy':   ('sine',   [(880, 0.06), (1175, 0.1)]),       # 買い物の 音
 }
 
 
@@ -123,6 +133,81 @@ def sfx(name):
             pass
 
 
+# テクスチャ: 画像ファイルは 使わず、16×16 の ドット絵を プログラムで 描く
+#   random.Random(名前) を 使うので、毎回 同じ 絵に なる
+def make_texture(kind):
+    rnd = random.Random(kind)
+    img = Image.new('RGB', (16, 16))
+    px = img.load()
+
+    def put(x, y, c):
+        px[x % 16, y % 16] = tuple(max(0, min(255, int(v))) for v in c)
+
+    def noise(base, amount):                            # 全体を 少しずつ ちがう 色で ぬる
+        for y in range(16):
+            for x in range(16):
+                d = rnd.uniform(-amount, amount)
+                put(x, y, (base[0] + d, base[1] + d, base[2] + d))
+
+    def specks(colors, count, size=2):                  # つぶつぶを 散らす
+        for _ in range(count):
+            x, y, c = rnd.randrange(16), rnd.randrange(16), rnd.choice(colors)
+            for dx in range(size):
+                for dy in range(size):
+                    if rnd.random() < 0.8:
+                        put(x + dx, y + dy, c)
+
+    if kind == 'stone':
+        noise((128, 128, 138), 12)
+        specks([(100, 100, 112), (150, 150, 160)], 10, 2)
+    elif kind == 'wood':                                # 木の 板（横の 板が 4まい）
+        for y in range(16):
+            for x in range(16):
+                c = 150 + rnd.uniform(-8, 8) + (12 if (y // 4) % 2 else 0) + (6 if (x + y * 3) % 7 == 0 else 0)
+                put(x, y, (c + 45, c - 5, c - 70))
+        for y in range(3, 16, 4):
+            for x in range(16):
+                put(x, y, (120, 75, 35))
+        for y in range(16):
+            put((y // 4) * 5 + 2, y, (120, 75, 35))
+    elif kind == 'iron':                                # 石に 銀色の 鉱石が まざる
+        noise((120, 120, 132), 12)
+        specks([(235, 238, 250), (205, 212, 230), (250, 236, 210)], 15, 2)
+    elif kind == 'rubble':                              # くず石（じゃり）
+        noise((98, 86, 76), 10)
+        specks([(70, 60, 54), (130, 116, 100), (85, 74, 66)], 26, 2)
+    elif kind == 'cloud':
+        noise((240, 244, 255), 6)
+        specks([(225, 232, 250)], 8, 3)
+    elif kind == 'gold':
+        noise((235, 185, 55), 12)
+        for i in range(16):
+            put(i, i, (255, 236, 150))
+            put(i + 1, i, (255, 226, 120))
+    elif kind == 'ground':
+        noise((70, 64, 82), 10)
+        specks([(52, 46, 62), (90, 84, 104)], 14, 2)
+    elif kind == 'chest':                               # 宝箱（鍵が 入っている）
+        noise((140, 88, 44), 10)
+        for x in range(16):
+            for y in (7, 8):
+                put(x, y, (235, 190, 60))
+        for x, y in ((7, 6), (8, 6), (7, 9), (8, 9), (6, 7), (9, 7), (6, 8), (9, 8)):
+            put(x, y, (255, 235, 130))
+        put(7, 7, (50, 30, 20))
+        put(8, 8, (50, 30, 20))
+    for i in range(16):                                 # ふちを 少し 暗く（さかい目が 分かる）
+        for x, y in ((i, 0), (i, 15), (0, i), (15, i)):
+            r, gg, b = px[x, y]
+            px[x, y] = (int(r * 0.75), int(gg * 0.75), int(b * 0.75))
+    t = Texture(img)
+    t.filtering = None                                  # ぼかさない（ドット絵らしく）
+    return t
+
+
+TEXTURES = {k: make_texture(k) for k in ('stone', 'wood', 'iron', 'rubble', 'cloud', 'gold', 'ground', 'chest')}
+
+
 # ============================================================
 # ② 設定（ここの 数字を 変えると むずかしさが 変わる）
 # ============================================================
@@ -131,8 +216,7 @@ HALF = 5                    # たて穴の 広さ（まんなかから かべま
 REACH = 6                   # ほる・置く ことが できる きょり（ブロック）
 MAX_HP = 5
 
-LAVA_DELAY = 20             # 溶岩が 動きだすまでの 時間（秒）
-LAVA_START_SPEED = 0.15     # 溶岩の 最初の 速さ（m/秒）
+LAVA_START_SPEED = 0.12     # 溶岩の 最初の 速さ（m/秒）
 LAVA_ACCEL = 0.004          # 1秒ごとに 速くなる 量
 LAVA_MAX_SPEED = 1.2        # 溶岩の 最高速度
 WAVE_INTERVAL = (35, 50)    # 溶岩の「波」が 来る 間かく（秒）
@@ -142,7 +226,10 @@ WAVE_POWER = 4              # 波のあいだ 溶岩が 何倍 速くなるか
 WOOD_BURN = 3               # 置いた 木は、溶岩から この高さまで 近づくと 燃える
 
 # かたさ: ほりおわるまでに 左クリックを おしつづける 時間（秒）
-HARDNESS = {'cloud': 0.2, 'rubble': 0.35, 'wood': 0.3, 'stone': 0.7, 'iron': 1.5}
+HARDNESS = {'cloud': 0.2, 'rubble': 0.35, 'wood': 0.3, 'stone': 0.7, 'iron': 1.5, 'chest': 1.0}
+
+PILLAR_WAIT = 0.18          # Q で 積むときの 間かく（秒）
+PILLAR_SPEED = 9            # 積むときに 体が 上がる 速さ（m/秒）
 
 ROCK_INTERVAL = 5           # 落石の 間かく（秒）
 ROCK_START = 8              # この 高さ（m）より 上で 落石が はじまる
@@ -151,34 +238,78 @@ JET_COST = {'stone': 8, 'iron': 8}   # ジェット機の 材料
 JET_TIME = 3                # ジェット機が 飛ぶ 時間（秒）
 JET_SPEED = 10              # ジェット機の 上る 速さ（m/秒）→ 3秒で 30m
 
+# 敵: エリア → (名前, HP, 速さ, たおすと もらえる コイン, 動き方, 色)
+#   動き方: 'fly' = 飛んで 追いかけてくる   'hop' = ブロックの 上を ぴょんぴょん はねてくる
+ENEMY_TYPES = {
+    '洞窟': ('コウモリ',   2, 1.8, 2, 'fly', '#5b3b8c'),
+    '森':   ('スライム',   3, 2.6, 3, 'hop', '#4fcf6a'),
+    '空':   ('カラス',     3, 3.0, 3, 'fly', '#2a2a36'),
+    '天国': ('まよい天使', 4, 2.8, 4, 'fly', '#fff4d6'),
+}
+ENEMY_INTERVAL = 10         # 敵が 出てくる 間かく（秒）
+ENEMY_FIRST = 20            # ゲームが はじまって 最初の 敵が 出るまでの 時間（秒）
+ENEMY_MAX = 3               # 同時に 出る 敵の 数
+ENEMY_START = 6             # この 高さ（m）より 上で 敵が 出はじめる
+ENEMY_REST = 4.0            # 敵が 突進したあと、はなれていく 時間（秒）
+ENEMY_WINDUP = 0.8          # 飛ぶ敵が 突進する 前に 止まって 赤く 光る 時間（秒）= よける・斬る チャンス
+SWORD_REACH = 2.8           # 剣が とどく きょり
+SWORD_WAIT = 0.35           # 剣を ふる 間かく（秒）
+
+# ショップ: (名前, 値段コイン, せつめい, こうか)
+SHOP_ITEMS = [
+    ('回復薬',       5, 'HP を 1 回復',                  'heal'),
+    ('資材パック',   4, '木 5・石 5',                    'pack'),
+    ('鉄インゴット', 6, '鉄 3',                          'iron'),
+    ('シールド',     8, '次の ダメージを 1回 ふせぐ',    'shield'),
+    ('溶岩ストップ', 10, '溶岩を 10秒 止める',           'stop'),
+    ('鍵さがし',     8, '近い 鍵の 方向を 40秒 教える',  'radar'),
+    ('ジェット券',   15, '材料なしで ジェット機に 1回',  'jet'),
+]
+
+# 鍵: (エリア, かくれている 高さの はんい m)。エリアごとに 1つ、かべの 奥の 宝箱に 入っている
+KEY_RANGES = [('洞窟', 8, 26), ('森', 34, 56), ('空', 64, 86)]
+
+# やられたときの ひとこと: 原因 → (ことば, [ヒント, ...])
+DEATH_HINTS = {
+    'lava':  ('溶岩に のまれた…', ['Q を おしつづけると、真下に ブロックを 積んで すばやく 上れる',
+                                    '石 8・鉄 8 で C の ジェット機。一気に 30m 上がれる',
+                                    'ショップの「溶岩ストップ」で 10秒 時間が かせげる']),
+    'rock':  ('落石に つぶされた…', ['地面の 黒い 影が、石が 落ちてくる 場所。影から はなれよう',
+                                     'ショップの「シールド」で 1回 ダメージを ふせげる']),
+    'enemy': ('敵に やられた…', ['F で 剣を ふれる。たおすと コインが もらえる',
+                                 '敵は 足場の 上だと 戦いやすい。ショップの 回復薬も 使おう']),
+}
+
 # むずかしさ: (名前, 溶岩の 速さの 倍率, 溶岩が 動きだすまでの 時間, 最初の 資材)
 DIFFICULTIES = [
-    ('やさしい',   0.7, 30, {'wood': 12, 'stone': 12, 'iron': 4}),
-    ('ふつう',     1.0, 20, {'wood': 6, 'stone': 6, 'iron': 0}),
+    ('やさしい',   0.7, 35, {'wood': 16, 'stone': 16, 'iron': 4}),
+    ('ふつう',     1.0, 25, {'wood': 10, 'stone': 10, 'iron': 0}),
     ('むずかしい', 1.4, 12, {'wood': 3, 'stone': 3, 'iron': 0}),
 ]
 BEST_FILE = os.path.join(HERE, 'lava_craft_3d_best.json')
 
-# エリア: (はじまる 高さ m, 名前, 空の色, 資材の 出やすさ)
-AREAS = [
+# エリア: (はじまる 高さ m, 名前, 空の色, 資材の 出やすさ, 霧の こさ)
 #   鉄は 大事な 鉱石なので 少なめ。そのかわり まわりを くず石で 囲ってある
-    (0,  '洞窟', color.hex('#1c1424'), {'wood': 0.20, 'stone': 0.68, 'iron': 0.12}),
-    (30, '森',   color.hex('#78b0dc'), {'wood': 0.60, 'stone': 0.30, 'iron': 0.10}),
-    (60, '空',   color.hex('#5a8ee6'), {'wood': 0.25, 'stone': 0.50, 'iron': 0.25}),
-    (90, '天国', color.hex('#ffe6c8'), {'wood': 0.20, 'stone': 0.50, 'iron': 0.30}),
+AREAS = [
+    (0,  '洞窟', color.hex('#100c22'), {'wood': 0.20, 'stone': 0.68, 'iron': 0.12}, 0.055),
+    (30, '森',   color.hex('#3f7a6a'), {'wood': 0.60, 'stone': 0.30, 'iron': 0.10}, 0.035),
+    (60, '空',   color.hex('#6aa2ee'), {'wood': 0.25, 'stone': 0.50, 'iron': 0.25}, 0.014),
+    (90, '天国', color.hex('#ffe2c0'), {'wood': 0.20, 'stone': 0.50, 'iron': 0.30}, 0.022),
 ]
-BLOCK_COLOR = {
-    'ground': color.hex('#5a5664'),     # 一番下の 地面（こわせない）
+BLOCK_COLOR = {                         # かけら・手に 持つ ブロックの 色
+    'ground': color.hex('#5a5664'),
     'wood':   color.hex('#d08c4c'),
     'stone':  color.hex('#a8a8b4'),
     'iron':   color.hex('#eef1fa'),
     'rubble': color.hex('#6e6258'),     # くず石（ほっても 資材に ならない。鉄の まわりに ある）
-    'cloud':  color.hex('#f4f6ff'),     # 雲（乗れるけど ほれない）
+    'cloud':  color.hex('#f4f6ff'),     # 雲（ほれるけど 資材に ならない）
     'gold':   color.hex('#ffd24a'),     # 天国の 床（ほれない）
+    'chest':  color.hex('#c08040'),     # 宝箱（鍵が 入っている）
 }
-NAME = {'wood': '木', 'stone': '石', 'iron': '鉄', 'rubble': 'くず石', 'cloud': '雲'}
+NAME = {'wood': '木', 'stone': '石', 'iron': '鉄', 'rubble': 'くず石', 'cloud': '雲', 'chest': '宝箱'}
 MATERIALS = ['wood', 'stone', 'iron']
 UNBREAKABLE = ('ground', 'gold')
+CRYSTAL_COLORS = [color.hex(c) for c in ('#8f6bff', '#4fd6ff', '#ff6bd6', '#6bffd0')]
 
 
 def area_at(height):
@@ -219,16 +350,33 @@ def make_shaded_cube():
     return Mesh(vertices=verts, triangles=tris, uvs=uvs, colors=cols)
 
 
-
 class Block(Entity):
     def __init__(self, position, kind, placed=False):
-        c = lerp(BLOCK_COLOR[kind], color.black, random.uniform(0, 0.12))   # 少しずつ 色を 変えると 自然に 見える
-        super().__init__(model=make_shaded_cube(), texture='white_cube', position=position, color=c, collider='box',
-                         double_sided=True)
+        c = lerp(color.white, color.gray, random.uniform(0, 0.25))   # 少しずつ 明るさを 変えると 自然に 見える
+        super().__init__(model=make_shaded_cube(), texture=TEXTURES[kind], position=position, color=c,
+                         collider='box', double_sided=True)
         self.key = position                             # 辞書の キー (x, y, z)
         self.kind = kind
         self.placed = placed                            # 自分で 置いた ブロックなら True
         blocks[position] = self
+        if not placed:
+            self.decorate(area_at(position[1])[1])
+
+    def decorate(self, area):
+        """自然の ブロックに、エリアらしい かざりを つける（子どもの Entity なので、ほると いっしょに 消える）"""
+        if area == '洞窟' and self.kind in ('stone', 'iron', 'rubble') and random.random() < 0.15:
+            for _ in range(random.randint(1, 3)):     # 光る 結晶
+                Entity(parent=self, model='diamond', color=random.choice(CRYSTAL_COLORS),
+                       position=(random.uniform(-0.3, 0.3), 0.62, random.uniform(-0.3, 0.3)),
+                       scale=(0.14, random.uniform(0.3, 0.55), 0.14),
+                       rotation=(random.uniform(-25, 25), random.uniform(0, 90), random.uniform(-25, 25)))
+        elif area == '森' and self.kind in ('stone', 'wood', 'rubble') and random.random() < 0.55:
+            Entity(parent=self, model='cube', color=color.hex(random.choice(('#4f9a4a', '#5fae52', '#3f8a44'))),
+                   position=(0, 0.47, 0), scale=(1.03, 0.08, 1.03))          # こけ
+            if random.random() < 0.3:                   # たれさがる ツタ
+                Entity(parent=self, model='cube', color=color.hex('#3f8a44'),
+                       position=(random.uniform(-0.4, 0.4), -0.2, random.choice((-0.52, 0.52))),
+                       scale=(0.08, random.uniform(0.8, 1.6), 0.02))
 
 
 def add_block(x, y, z, kind, placed=False):
@@ -252,16 +400,20 @@ def remove_block(pos):
         destroy(b)
 
 
+def surround(x, y, z, kind='rubble'):
+    """(x, y, z) の まわり 6方向を くず石で 囲う（もう ブロックが ある 所は そのまま）"""
+    for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+        nx, ny, nz = x + dx, y + dy, z + dz
+        if abs(nx) <= HALF and abs(nz) <= HALF and 1 <= ny < GOAL:
+            add_block(nx, ny, nz, kind)
+
+
 def add_resource(x, y, z, height):
     """資材の ブロックを 置く。鉄（大事な 鉱石）なら、まわりを くず石で 囲う"""
     kind = random_resource(height)
     add_block(x, y, z, kind)
-    if kind != 'iron':
-        return
-    for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
-        nx, ny, nz = x + dx, y + dy, z + dz
-        if abs(nx) <= HALF and abs(nz) <= HALF and 1 <= ny < GOAL:
-            add_block(nx, ny, nz, 'rubble')             # もう ブロックが ある 所には 置かれない
+    if kind == 'iron':
+        surround(x, y, z)
 
 
 def random_resource(height):
@@ -273,6 +425,16 @@ def random_resource(height):
     if x < rate['iron'] + rate['stone']:
         return 'stone'
     return 'wood'
+
+
+def make_chest(y):
+    """かべの 中に 宝箱（鍵入り）を うめて、くず石で かくす"""
+    i = random.randint(-HALF + 1, HALF - 1)
+    x, z = random.choice(((i, -HALF), (i, HALF), (-HALF, i), (HALF, i)))
+    remove_block((x, y, z))
+    add_block(x, y, z, 'chest')
+    surround(x, y, z)
+    chests.append((x, y, z))
 
 
 def make_layer(y):
@@ -296,6 +458,8 @@ def make_layer(y):
         for x, z in ((i, -HALF), (i, HALF), (-HALF, i), (HALF, i)):
             if random.random() < 0.3:
                 add_resource(x, y, z, y)
+    if y in g.key_heights:                              # 鍵の 宝箱
+        make_chest(y)
     # 5だんごとに 浮き島
     if y % 5 == 0:
         cx, cz = random.randint(-2, 2), random.randint(-2, 2)
@@ -310,9 +474,11 @@ def make_layer(y):
         if random.random() < 0.25:                      # ときどき 回復の実
             berries.append(Entity(model='sphere', color=color.hex('#e83c5a'), scale=0.45,
                                   position=(cx, y + 0.8, cz)))
-    # 4だんごとに たて穴の 外の けしき
-    if y % 4 == 0:
+    # 2だんごとに たて穴の 外の けしき
+    if y % 2 == 0:
         make_scenery(y)
+    if y == 96:
+        make_rainbow(y)
 
 
 # たて穴の 外に 出られないように する 見えない かべ
@@ -328,39 +494,182 @@ scenery = []                                            # (高さ, かざり) �
 
 
 def deco(y, **kw):
-    e = Entity(shader=basic_lighting_shader, **kw)
+    e = Entity(**kw)
     scenery.append((y, e))
     return e
 
 
+def outside_point(near=3, far=10):
+    """たて穴の 外の、少し はなれた 場所 (x, z)"""
+    side = random.choice((-1, 1))
+    d = random.uniform(HALF + near, HALF + far)
+    a = random.uniform(-HALF - far, HALF + far)
+    return (side * d, a) if random.random() < 0.5 else (a, side * d)
+
+
 def make_scenery(y):
     area = area_at(y)[1]
-    for _ in range(2):
-        side = random.choice((-1, 1))
-        d = random.uniform(HALF + 3, HALF + 9)          # たて穴から 少し はなれた 所
-        a = random.uniform(-HALF - 6, HALF + 6)
-        x, z = (side * d, a) if random.random() < 0.5 else (a, side * d)
-        if area == '洞窟':                              # 光る 結晶
-            c = random.choice(("#d5c2ff", '#4fd6ff', '#ff6bd6'))
-            deco(y, model='cube', color=color.hex(c), position=(x, y + 1, z),
-                 scale=(0.6, random.uniform(1.5, 3), 0.6), rotation=(random.uniform(-20, 20), 0, random.uniform(-25, 25)))
-        elif area == '森':                              # 木（みき と 葉っぱ）
-            h = random.uniform(3, 5)
-            deco(y, model='cube', color=color.hex('#6b4a2e'), position=(x, y + h / 2, z), scale=(0.6, h, 0.6))
-            deco(y, model='cube', color=color.hex('#4f9a4a'), position=(x, y + h, z), scale=(2.4, 1.8, 2.4))
-        elif area == '空':                              # 雲
-            deco(y, model='cube', color=color.hex('#ffffff'), position=(x, y + 1, z),
-                 scale=(random.uniform(3, 6), 0.8, random.uniform(2, 4)))
-        else:                                           # 天国の 金の 柱
-            deco(y, model='cube', color=color.hex('#ffe08a'), position=(x, y + 2, z), scale=(0.8, 4, 0.8))
+    if area == '洞窟':
+        # 遠くの 岩かべ（洞窟の 中に いる 感じ）
+        for _ in range(2):
+            x, z = outside_point(9, 14)
+            s = random.uniform(3, 6)
+            deco(y, model=make_shaded_cube(), texture=TEXTURES['stone'], color=color.hex('#4a4060'),
+                 position=(x, y + random.uniform(-1, 2), z), scale=(s, random.uniform(3, 7), s),
+                 rotation=(0, random.uniform(0, 90), 0))
+        # 光る 結晶の むれ
+        x, z = outside_point(2, 7)
+        for _ in range(random.randint(3, 5)):
+            deco(y, model='diamond', color=random.choice(CRYSTAL_COLORS),
+                 position=(x + random.uniform(-0.8, 0.8), y + random.uniform(0, 1), z + random.uniform(-0.8, 0.8)),
+                 scale=(0.4, random.uniform(1.2, 2.8), 0.4),
+                 rotation=(random.uniform(-30, 30), random.uniform(0, 90), random.uniform(-30, 30)))
+        # 天井から たれる つらら
+        if random.random() < 0.6:
+            x, z = outside_point(2, 9)
+            deco(y, model='diamond', color=color.hex('#6a6488'), position=(x, y + 5, z),
+                 scale=(0.5, random.uniform(2, 4), 0.5))
+        # 光る キノコ
+        if random.random() < 0.5:
+            x, z = outside_point(2, 6)
+            deco(y, model='cube', color=color.hex('#d8d0e8'), position=(x, y + 0.4, z), scale=(0.15, 0.8, 0.15))
+            deco(y, model='sphere', color=color.hex('#5ff2ff'), position=(x, y + 0.85, z), scale=(0.7, 0.3, 0.7))
+    elif area == '森':
+        # 大きな 木（みき と 葉っぱ）
+        x, z = outside_point(3, 10)
+        h = random.uniform(5, 9)
+        deco(y, model=make_shaded_cube(), texture=TEXTURES['wood'], color=color.hex('#8a6040'),
+             position=(x, y + h / 2, z), scale=(0.9, h, 0.9))
+        for _ in range(3):
+            deco(y, model=make_shaded_cube(), color=color.hex(random.choice(('#3f8a44', '#4f9a4a', '#5fae52'))),
+                 position=(x + random.uniform(-1, 1), y + h + random.uniform(-0.8, 0.8), z + random.uniform(-1, 1)),
+                 scale=(random.uniform(2, 3.2), random.uniform(1.4, 2.2), random.uniform(2, 3.2)))
+        # 木もれ日の 光の 柱
+        if random.random() < 0.4:
+            x, z = outside_point(1, 6)
+            e = deco(y, model='cube', color=color.hex('#fff2a8'), position=(x, y + 4, z),
+                     scale=(0.6, 10, 0.6), rotation=(0, 0, random.uniform(-15, 15)))
+            e.alpha = 0.12
+        # 光る キノコ
+        if random.random() < 0.4:
+            x, z = outside_point(2, 6)
+            deco(y, model='cube', color=color.hex('#f2ead8'), position=(x, y + 0.3, z), scale=(0.15, 0.6, 0.15))
+            deco(y, model='sphere', color=color.hex('#ffb04a'), position=(x, y + 0.65, z), scale=(0.6, 0.25, 0.6))
+    elif area == '空':
+        # 流れていく 雲
+        x, z = outside_point(3, 12)
+        cloud = deco(y, position=(x, y + random.uniform(0, 2), z))
+        for _ in range(3):
+            Entity(parent=cloud, model='cube', color=color.white,
+                   position=(random.uniform(-1.5, 1.5), random.uniform(-0.2, 0.3), random.uniform(-1, 1)),
+                   scale=(random.uniform(2, 4), random.uniform(0.6, 1.0), random.uniform(1.5, 3)))
+        cloud.mover = 'cloud'
+        cloud.speed = random.uniform(0.3, 0.8)
+        # うかぶ 島
+        if random.random() < 0.35:
+            x, z = outside_point(6, 12)
+            deco(y, model=make_shaded_cube(), color=color.hex('#5fae52'), position=(x, y + 1, z), scale=(3, 0.4, 3))
+            deco(y, model=make_shaded_cube(), texture=TEXTURES['stone'], color=color.hex('#9a8670'),
+                 position=(x, y + 0.2, z), scale=(2.4, 1.4, 2.4))
+        # 鳥の むれ（たて穴の まわりを 回る）
+        if random.random() < 0.25:
+            flock = deco(y, position=(0, y + 3, 0))
+            for i in range(3):
+                Entity(parent=flock, model='cube', color=color.hex('#2a2a36'),
+                       position=(i * 0.8, 0, -abs(i - 1) * 0.6), scale=(0.5, 0.06, 0.15))
+            flock.mover = 'bird'
+            flock.angle = random.uniform(0, 360)
+            flock.radius = random.uniform(9, 13)
+    else:
+        # 天国の 金の 柱と 光の 玉
+        x, z = outside_point(3, 10)
+        deco(y, model=make_shaded_cube(), texture=TEXTURES['gold'], position=(x, y + 2, z), scale=(0.8, 4, 0.8))
+        deco(y, model='sphere', color=color.hex('#fff8e0'), position=(x, y + 4.4, z), scale=0.6)
+        if random.random() < 0.5:
+            x, z = outside_point(2, 8)
+            orb = deco(y, model='sphere', color=color.hex('#fffbe8'), position=(x, y + 1.5, z), scale=0.35)
+            orb.mover = 'bob'
+            orb.base_y = orb.y
+
+
+def make_rainbow(y):
+    """天国の 入り口に かかる 虹（小さな 箱を 半円に ならべる）"""
+    for i, c in enumerate(('#ff5a5a', '#ffa94a', '#ffe14a', '#6fe36f', '#4fb6ff', '#9b6bff')):
+        r = 13 - i * 0.45
+        for k in range(15):
+            a = math.pi * k / 14
+            e = deco(y, model='cube', color=color.hex(c), position=(math.cos(a) * r, y + math.sin(a) * r * 0.6, HALF + 8),
+                     scale=(1.1, 0.45, 0.3), rotation=(0, 0, -math.degrees(a) + 90))
+            e.alpha = 0.7
 
 
 def make_gate(y):
     """天国の 門（2本の 柱と 横の はり）"""
     for x in (-2, 2):
-        deco(y, model='cube', color=color.hex('#ffd24a'), position=(x, y + 2.5, 0), scale=(0.6, 4, 0.6))
+        deco(y, model=make_shaded_cube(), texture=TEXTURES['gold'], position=(x, y + 2.5, 0), scale=(0.6, 4, 0.6))
     deco(y, model='cube', color=color.hex('#fff1b8'), position=(0, y + 4.7, 0), scale=(5.2, 0.5, 0.8))
     deco(y, model='sphere', color=color.hex('#ffffff'), position=(0, y + 5.6, 0), scale=1.0)
+
+
+def update_scenery(dt):
+    """動く かざり（雲・鳥・光の玉）を 動かす"""
+    for _, e in scenery:
+        kind = getattr(e, 'mover', None)
+        if kind == 'cloud':
+            e.x += e.speed * dt
+            if e.x > HALF + 14:
+                e.x = -HALF - 14
+        elif kind == 'bird':
+            e.angle += 20 * dt
+            a = math.radians(e.angle)
+            e.x, e.z = math.cos(a) * e.radius, math.sin(a) * e.radius
+            e.rotation_y = -e.angle
+            for i, w in enumerate(e.children):
+                w.rotation_z = math.sin(time.time() * 10 + i) * 25
+        elif kind == 'bob':
+            e.y = e.base_y + math.sin(time.time() * 1.5 + e.x) * 0.4
+
+
+# まわりを ただよう 光の粒（エリアで 変わる: 洞窟=ホタル、森=葉っぱ、空=風のつぶ、天国=光）
+motes = []
+for _ in range(36):
+    m = Entity(model='quad', billboard=True, scale=0.08)
+    m.life = 0
+    m.v = Vec3(0, 0, 0)
+    m.phase = random.uniform(0, 6)
+    motes.append(m)
+
+
+def respawn_mote(m, area):
+    m.position = player.position + Vec3(random.uniform(-7, 7), random.uniform(-2, 8), random.uniform(-7, 7))
+    m.life = random.uniform(3, 7)
+    if area == '洞窟':
+        m.color = random.choice(CRYSTAL_COLORS)
+        m.scale = random.uniform(0.06, 0.12)
+        m.v = Vec3(random.uniform(-0.3, 0.3), random.uniform(-0.1, 0.3), random.uniform(-0.3, 0.3))
+    elif area == '森':
+        m.color = color.hex(random.choice(('#7fcf5a', '#b4d84a', '#e8a040')))
+        m.scale = 0.14
+        m.v = Vec3(random.uniform(-0.3, 0.3), -0.6, random.uniform(-0.3, 0.3))
+    elif area == '空':
+        m.color = color.white
+        m.scale = (0.4, 0.03)
+        m.v = Vec3(3, 0, random.uniform(-0.3, 0.3))
+    else:
+        m.color = color.hex('#ffe7a0')
+        m.scale = random.uniform(0.05, 0.1)
+        m.v = Vec3(0, random.uniform(0.4, 0.9), 0)
+
+
+def update_motes(dt, area):
+    for m in motes:
+        m.life -= dt
+        if m.life <= 0 or distance(m.position, player.position) > 12:
+            respawn_mote(m, area)
+        m.position += m.v * dt
+        if area == '森':
+            m.x += math.sin(time.time() * 2 + m.phase) * 0.5 * dt   # ひらひら
+        m.alpha = 0.35 + 0.35 * math.sin(time.time() * 3 + m.phase)
 
 
 # ============================================================
@@ -379,13 +688,20 @@ mine_back.alpha = 0.55
 mine_fill = Entity(parent=camera.ui, model='quad', origin=(-0.5, 0), position=(-0.09, -0.09), scale=(0.001, 0.014),
                    color=color.hex('#ffd24a'), enabled=False)
 mine_label = Text(position=(0, -0.055), origin=(0, 0), scale=0.9, enabled=False)
-hand = Entity(parent=camera, model='cube', texture='white_cube', position=(0.62, -0.5, 1.5),
-              scale=0.22, rotation=(10, -25, 0), shader=basic_lighting_shader)   # 手に 持っている ブロック
+hand = Entity(parent=camera, model=make_shaded_cube(), position=(0.62, -0.5, 1.5),
+              scale=0.22, rotation=(10, -25, 0))                     # 手に 持っている ブロック
+# 左手の 剣（刃・つば・にぎり）
+sword = Entity(parent=camera, position=(-0.55, -0.42, 1.25), rotation=(25, 20, -15))
+Entity(parent=sword, model='cube', color=color.hex('#dfe8f2'), position=(0, 0.33, 0), scale=(0.05, 0.55, 0.015))
+Entity(parent=sword, model='cube', color=color.hex('#c9a227'), scale=(0.2, 0.04, 0.05))
+Entity(parent=sword, model='cube', color=color.hex('#5a3a22'), position=(0, -0.1, 0), scale=(0.045, 0.16, 0.045))
 
 height_text = Text(position=(-0.86, 0.47), scale=1.6)
 hp_text = Text(position=(-0.86, 0.41), scale=1.4, color=color.hex('#ff6a80'))
 item_text = Text(position=(0.3, 0.47), scale=1.3)
 jet_text = Text(position=(0.3, 0.42), scale=1.0, color=color.hex('#bfe3ff'))
+coin_text = Text(position=(0.3, 0.385), scale=1.0, color=color.hex('#ffd24a'))
+radar_text = Text(position=(0, 0.36), origin=(0, 0), scale=1.4, color=color.hex('#ffe680'))
 lava_text = Text(position=(0, -0.42), origin=(0, 0), scale=1.6)
 message_text = Text(position=(0, -0.34), origin=(0, 0), scale=1.2)
 warn_text = Text(text='溶岩の 波が 来る！ 上へ にげろ！', position=(0, 0.25), origin=(0, 0),
@@ -399,11 +715,12 @@ lava_glow = Entity(parent=camera.ui, model='quad', scale=(2, 1), color=color.hex
 lava_glow.alpha = 0
 hurt_flash = Entity(parent=camera.ui, model='quad', scale=(2, 1), color=color.red)
 hurt_flash.alpha = 0
-panel = Entity(parent=camera.ui, model='quad', scale=(1.35, 0.72), position=(0, 0.06), color=color.black)
+panel = Entity(parent=camera.ui, model='quad', scale=(1.45, 0.8), position=(0, 0.04), color=color.black)
 panel.alpha = 0.6                                                     # 文字の うしろの 黒い 板
-big_text = Text(position=(0, 0.25), origin=(0, 0), scale=3)
-sub_text = Text(position=(0, 0.04), origin=(0, 0), scale=1.3)
-hud = [height_text, hp_text, item_text, jet_text, lava_text, bar_back, bar_fill, bar_lava, hand]
+big_text = Text(position=(0, 0.3), origin=(0, 0), scale=3)
+sub_text = Text(position=(0, 0.04), origin=(0, 0), scale=1.2)
+hud = [height_text, hp_text, item_text, jet_text, coin_text, radar_text, lava_text,
+       bar_back, bar_fill, bar_lava, hand, sword]
 
 
 class State:
@@ -413,6 +730,7 @@ class State:
 
 g = State()
 g.diff = 1                                              # むずかしさ（DIFFICULTIES の 番号）
+g.key_heights = []
 
 
 def say(text, time=2.5):
@@ -437,11 +755,13 @@ def save_best(data):
 
 
 # ============================================================
-# ⑥ 落石・回復の実・ジェット機・小さな 演出
+# ⑥ 落石・敵・剣・回復の実・ジェット機・真下に積む・小さな 演出
 # ============================================================
 rocks = []
 berries = []
 sparks = []                                             # こわした ときの かけら
+enemies = []
+chests = []                                             # 鍵の 宝箱が ある 場所 (x, y, z)
 
 
 class Rock(Entity):
@@ -469,6 +789,150 @@ class Rock(Entity):
             destroy(self.shadow)
             return True
         return False
+
+
+class Enemy(Entity):
+    """エリアごとの 弱い敵。さわると HP -1。剣で たおすと コイン"""
+
+    def __init__(self, area, pos):
+        name, hp, speed, coins, move, col = ENEMY_TYPES[area]
+        fly = move == 'fly'
+        super().__init__(model='sphere' if fly else 'cube', color=color.hex(col), position=pos,
+                         scale=0.55 if fly else 0.6)
+        self.base_color = self.color
+        self.name, self.hp, self.speed, self.coins, self.move = name, hp, speed, coins, move
+        self.vy = 0
+        self.vx = Vec3(0, 0, 0)                         # 横の 速さ（はねる敵）
+        self.hop_wait = 1.0
+        self.kb = Vec3(0, 0, 0)                         # はじかれた ときの 速さ
+        self.flash = 0
+        self.rest = 0                                   # 0 より 大きい あいだは はなれていく（当たらない）
+        self.mode = 'chase'                             # 飛ぶ敵: chase（追う）→ windup（ためる）→ dash（突進）
+        self.phase = random.uniform(0, 6)
+        for x in (-0.18, 0.18):                         # 目
+            Entity(parent=self, model='cube', color=color.white, position=(x, 0.12, -0.45), scale=(0.2, 0.22, 0.05))
+            Entity(parent=self, model='cube', color=color.black, position=(x, 0.1, -0.48), scale=(0.09, 0.12, 0.05))
+        self.wings = []
+        if fly:                                         # つばさ
+            for side in (-1, 1):
+                w = Entity(parent=self, model='cube', color=self.color, position=(side * 0.7, 0.05, 0),
+                           scale=(0.9, 0.06, 0.45))
+                w.side = side
+                self.wings.append(w)
+        if area == '天国':                              # 天使の わっか
+            Entity(parent=self, model='cube', color=color.hex('#ffd24a'), position=(0, 0.75, 0), scale=(0.6, 0.06, 0.6))
+
+    def step(self, dt):
+        target = player.position + Vec3(0, 1.0, 0)
+        to = target - self.position
+        self.look_at_2d(player.position, 'y')
+        self.rotation_y += 180                          # 目の ある 面を プレイヤーに 向ける
+        if self.rest > 0:                               # 当たったあとは はなれる
+            self.rest -= dt
+            to = -to
+        if self.move == 'fly':
+            t = time.time() * 2.5 + self.phase
+            wobble = Vec3(math.sin(t), math.sin(t * 0.9) * 0.6, math.cos(t)) * 0.8
+            if self.rest > 0:
+                self.mode = 'chase'
+                self.position += (to.normalized() * self.speed + wobble) * dt
+            elif self.mode == 'chase':
+                self.position += (to.normalized() * self.speed + wobble) * dt
+                if to.length() < 2.4:                   # 近づいたら 止まって ためる
+                    self.mode, self.timer = 'windup', ENEMY_WINDUP
+                    self.color = color.hex('#ff4040')
+            elif self.mode == 'windup':
+                self.timer -= dt
+                self.position += Vec3(random.uniform(-1, 1), 0, random.uniform(-1, 1)) * dt   # ぶるぶる
+                if self.timer <= 0:
+                    self.mode, self.timer = 'dash', 0.45
+                    self.dash_v = to.normalized() * self.speed * 4
+                    self.color = self.base_color
+            else:                                       # 突進（このときだけ 当たる）
+                self.timer -= dt
+                self.position += self.dash_v * dt
+                if self.timer <= 0:
+                    self.mode = 'chase'
+                    self.rest = ENEMY_REST
+            for w in self.wings:
+                w.rotation_z = math.sin(time.time() * 18 + self.phase) * 35 * w.side
+        else:
+            self.vy -= 20 * dt
+            ny = self.y + self.vy * dt
+            cell = (round(self.x), math.floor(ny - 0.3 + 0.5), round(self.z))
+            if self.vy <= 0 and cell in blocks:         # ブロックの 上に 着地
+                self.y = cell[1] + 0.5 + 0.3
+                self.vy = 0
+                self.vx = Vec3(0, 0, 0)
+                self.hop_wait -= dt
+                if self.hop_wait <= 0:                  # プレイヤーの ほうへ ぴょん
+                    self.hop_wait = random.uniform(0.6, 1.2)
+                    self.vy = 7 if to.y > -1 else 4
+                    flat = Vec3(to.x, 0, to.z)
+                    self.vx = flat.normalized() * self.speed if flat.length() > 0.1 else Vec3(0, 0, 0)
+            else:
+                self.y = ny
+            self.position += self.vx * dt
+            self.x = max(-HALF + 0.5, min(HALF - 0.5, self.x))
+            self.z = max(-HALF + 0.5, min(HALF - 0.5, self.z))
+            self.scale_y = 0.6 * (1.15 if self.vy > 0 else 0.9)   # ぷにぷに
+        self.position += self.kb * dt
+        self.kb *= max(0, 1 - 6 * dt)
+        if self.flash > 0:
+            self.flash -= dt
+            if self.flash <= 0:
+                self.color = self.base_color
+
+
+def spawn_enemy():
+    area = area_at(height())[1]
+    if ENEMY_TYPES[area][4] == 'fly':
+        a = random.uniform(0, math.pi * 2)
+        pos = (math.cos(a) * 4, player.y + random.uniform(3, 6), math.sin(a) * 4)
+    else:
+        pos = (random.randint(-HALF + 1, HALF - 1), player.y + random.uniform(3, 5), random.randint(-HALF + 1, HALF - 1))
+    enemies.append(Enemy(area, pos))
+
+
+def kill_enemy(e):
+    burst(e.position, e.base_color, 8)
+    g.coins += e.coins
+    g.kills += 1
+    sfx('coin')
+    say(f'{e.name}を たおした！  コイン +{e.coins}', 1.5)
+    enemies.remove(e)
+    destroy(e)
+
+
+def swing_sword():
+    """剣を ふる。前に いる 敵（とどく きょり・前の 方向）に ダメージ"""
+    if g.swing_wait > 0:
+        return
+    g.swing_wait = SWORD_WAIT
+    g.swing = 0.25
+    sfx('swing')
+    fwd = camera.forward
+    for e in enemies[:]:
+        d = e.position - camera.world_position
+        if d.length() < 1.2 or (d.length() < SWORD_REACH and d.normalized().dot(fwd) > 0.45):
+            e.hp -= 1
+            e.color = color.white
+            e.flash = 0.1
+            e.kb = Vec3(fwd.x, 0.3, fwd.z) * 6
+            e.rest = 1.0
+            sfx('hit')
+            if e.hp <= 0:
+                kill_enemy(e)
+
+
+def enemy_in_aim():
+    """画面の まんなかで ねらっている 敵（剣が とどく）が いれば True"""
+    fwd = camera.forward
+    for e in enemies:
+        d = e.position - camera.world_position
+        if d.length() < SWORD_REACH + 0.5 and d.normalized().dot(fwd) > 0.85:
+            return True
+    return False
 
 
 def burst(pos, col, n=6):
@@ -501,20 +965,33 @@ def show_mining(on, block=None, rate=0):
 
 def mine(target):
     """ブロックを ほりおえた ときに よぶ"""
-    if target.kind in g.items:
+    if target.kind == 'chest':                          # 鍵を 見つけた！
+        g.keys += 1
+        if target.key in chests:
+            chests.remove(target.key)
+        sfx('key')
+        say(f'鍵を 見つけた！ ({g.keys}/3)' + ('  全部 そろった！ 天国へ 行こう！' if g.keys == 3 else ''), 4)
+    elif target.kind in g.items:
         g.items[target.kind] += 1
     else:                                               # くず石・雲は 資材に ならない
         say(f'{NAME[target.kind]}は 資材に ならない', 1.2)
-    burst(target.key, target.color)
+    burst(target.key, BLOCK_COLOR[target.kind])
     sfx('mine')
     remove_block(target.key)
 
 
-def hurt():
+def hurt(cause):
+    """ダメージを 受ける。cause は 'rock' / 'enemy'（ゲームオーバーの ヒントに 使う）"""
     if g.invincible > 0:
         return
+    g.invincible = 1.5
+    if g.shield:                                        # シールドで 1回 ふせぐ
+        g.shield = False
+        say('シールドで ふせいだ！', 1.5)
+        sfx('pick')
+        return
     g.hp -= 1
-    g.invincible = 1.0
+    g.last_hit = cause
     hurt_flash.alpha = 0.45
     sfx('hurt')
 
@@ -522,11 +999,15 @@ def hurt():
 def ride_jet():
     if g.jet > 0:
         return
-    if any(g.items[k] < v for k, v in JET_COST.items()):
-        say('ジェット機には 石 8 と 鉄 8 が いる')
+    if g.free_jet > 0:                                  # ジェット券が あれば 材料なしで
+        g.free_jet -= 1
+    elif any(g.items[k] < v for k, v in JET_COST.items()):
+        say('ジェット機には 石 8 と 鉄 8 が いる（ショップの ジェット券でも OK）')
         return
-    for k, v in JET_COST.items():
-        g.items[k] -= v
+    else:
+        for k, v in JET_COST.items():
+            g.items[k] -= v
+    g.lift = None
     g.jet = JET_TIME
     player.gravity = 0                                  # 重力を 切って 上へ
     g.placed += 10
@@ -548,6 +1029,61 @@ def end_jet():
                 add_block(x, y - 1, z, 'stone', placed=True)
 
 
+def pillar():
+    """自分の 真下に ブロックを 積んで、体を 1だん 上げる（Q キー）
+       足の ある マス に ブロックを 置き、体は その 上まで すっと 上がる"""
+    if g.lift is not None or g.pillar_wait > 0 or g.jet > 0:
+        return
+    px, pz = round(player.x), round(player.z)
+    if abs(px) > HALF or abs(pz) > HALF:
+        return
+    feet = math.floor(player.y + 0.5)                   # 足が ある マスの 高さ
+    if (px, feet, pz) in blocks or (px, feet + 2, pz) in blocks:
+        say('頭の 上が つまっていて 積めない', 1)
+        g.pillar_wait = 0.5
+        return
+    mat = MATERIALS[g.mat]
+    if g.items[mat] < 1:                                # えらんだ 材料が なければ、ほかの 材料を 使う
+        others = [m for m in ('stone', 'wood', 'iron') if g.items[m] > 0]
+        if not others:
+            say('材料が ない。かべを ほって あつめよう', 1.5)
+            g.pillar_wait = 0.5
+            return
+        mat = others[0]
+    g.items[mat] -= 1
+    g.lift = (feet + 0.5, px, pz, mat, feet)
+    g.pillar_wait = PILLAR_WAIT
+    player.gravity = 0
+
+
+def update_lift(dt):
+    """pillar() で 上がっている とちゅう。上まで 着いたら ブロックを 置く"""
+    target, px, pz, mat, feet = g.lift
+    player.y = min(target, player.y + PILLAR_SPEED * dt)
+    player.x = lerp(player.x, px, min(1, 15 * dt))     # マスの まんなかへ よせる
+    player.z = lerp(player.z, pz, min(1, 15 * dt))
+    if player.y >= target:
+        add_block(px, feet, pz, mat, placed=True)
+        g.placed += 1
+        sfx('place')
+        player.gravity = 1
+        if hasattr(player, 'air_time'):
+            player.air_time = 0                         # 落ちる いきおいを リセット
+        g.lift = None
+
+
+def key_direction():
+    """いちばん 近い 宝箱の 方向を 矢印と 高さで 返す（鍵さがし）"""
+    if not chests:
+        return '近くに 鍵は ない'
+    c = min(chests, key=lambda p: distance(Vec3(*p), player.position))
+    dx, dz = c[0] - player.x, c[2] - player.z
+    rel = (math.degrees(math.atan2(dx, dz)) - player.rotation_y) % 360
+    arrow = '↑↗→↘↓↙←↖'[round(rel / 45) % 8]
+    dy = c[1] - height()
+    return f'鍵の 方向 {arrow}   {"上" if dy >= 0 else "下"} {abs(dy)}m'
+
+
 # ============================================================
 # ⑦ ゲームの 流れ
 # ============================================================
@@ -555,14 +1091,16 @@ def new_game():
     """世界を 作りなおして、タイトル画面に する"""
     for pos in list(blocks):
         remove_block(pos)
-    for e in rocks + berries + sparks + [e for _, e in scenery]:
+    for e in rocks + berries + sparks + enemies + [e for _, e in scenery]:
         if isinstance(e, Rock):
             destroy(e.shadow)
         destroy(e)
     rocks.clear()
     berries.clear()
     sparks.clear()
+    enemies.clear()
     scenery.clear()
+    chests.clear()
     name, mult, delay, items = DIFFICULTIES[g.diff]
     g.state = 'title'
     g.time = 0
@@ -583,6 +1121,20 @@ def new_game():
     g.area_idx = 0
     g.mine_block = None                                 # いま ほっている ブロック
     g.mine_t = 0                                        # ほりはじめてからの 時間
+    g.lift = None                                       # Q で 上がっている とちゅうの 情報
+    g.pillar_wait = 0
+    g.coins = 0
+    g.kills = 0
+    g.keys = 0
+    g.key_heights = [random.randint(a, b) for _, a, b in KEY_RANGES]
+    g.enemy_timer = ENEMY_FIRST
+    g.swing = 0
+    g.swing_wait = 0
+    g.shield = False
+    g.lava_stop = 0
+    g.radar = 0
+    g.free_jet = 0
+    g.last_hit = 'lava'
     player.position = (0, 1, 0)
     player.rotation = (0, 0, 0)
     player.gravity = 1
@@ -598,9 +1150,10 @@ def show_title():
         lines.append(f'{mark}{i + 1}. {name}   ベスト {best.get(name, 0)}')
     big_text.text = 'LAVA CRAFT 3D'
     big_text.color = color.hex('#ffc850')
-    sub_text.text = ('～ 天国まで 逃げろ！ ～\n\n' + '\n'.join(lines) +
-                     '\n\n1 / 2 / 3 で むずかしさを えらんで、クリック か Enter で スタート\n'
-                     'WASD 移動 ・ 左クリック ほる ・ 右クリック 置く ・ C ジェット機 ・ F11 全画面')
+    sub_text.text = ('～ 天国まで 逃げろ！ ～   かべの 奥に 鍵が 3つ…？\n\n' + '\n'.join(lines) +
+                     '\n\n1 / 2 / 3 で むずかしさを えらんで、クリック か Enter で スタート\n\n'
+                     'WASD 移動 ・ 左クリック長押し ほる ・ 右クリック 置く ・ Q 真下に 積む\n'
+                     'F 剣 ・ B ショップ ・ C ジェット機 ・ F11 全画面')
     camera.background_color = AREAS[0][2]
     show_mining(False)
     big_text.enabled = sub_text.enabled = panel.enabled = True
@@ -616,7 +1169,7 @@ def start():
     player.enabled = True
     mouse.locked = True
     name, mult, delay, items = DIFFICULTIES[g.diff]
-    say(f'むずかしさ: {name}。溶岩が 動きだす 前に 資材を あつめよう！', 4)
+    say(f'むずかしさ: {name}。溶岩が 動きだす 前に 資材を あつめよう！  Q で 真下に 積める', 5)
 
 
 def generate():
@@ -626,10 +1179,12 @@ def generate():
         make_layer(g.top_layer)
     for pos in [p for p in blocks if p[1] < g.lava_y - 4]:
         remove_block(pos)
+    for c in [c for c in chests if c[1] < g.lava_y - 4]:
+        chests.remove(c)
     for b in [b for b in berries if b.y < g.lava_y]:
         berries.remove(b)
         destroy(b)
-    for item in [s for s in scenery if s[0] < g.lava_y - 6]:
+    for item in [s for s in scenery if s[0] < g.lava_y - 8]:
         scenery.remove(item)
         destroy(item[1])
 
@@ -641,6 +1196,8 @@ def height():
 def finish(result):
     g.state = result
     player.enabled = False
+    player.gravity = 1
+    g.lift = None
     mouse.locked = False
     for e in hud:
         e.enabled = False
@@ -648,23 +1205,34 @@ def finish(result):
     warn_text.enabled = False
     lava_glow.alpha = 0
     name = DIFFICULTIES[g.diff][0]
-    score = int(g.time) + g.best * 10 + g.placed * 2 + (500 if result == 'clear' else 0)
+    true_end = result == 'clear' and g.keys == 3
+    score = (int(g.time) + g.best * 10 + g.placed * 2 + g.kills * 20 + g.keys * 300
+             + (500 if result == 'clear' else 0) + (1000 if true_end else 0))
     best = load_best()
     record = score > best.get(name, 0)
     if record:
         best[name] = score
         save_best(best)
-    if result == 'clear':
+    if true_end:
+        big_text.text = '真エンディング！'
+        big_text.color = color.hex('#b8f0ff')
+        head = '3つの 鍵で 天国の 宝物庫が ひらいた！\n\n'
+        sfx('clear')
+    elif result == 'clear':
         big_text.text = '天国に 着いた！'
         big_text.color = color.hex('#ffe678')
+        head = f'鍵 {g.keys}/3 …… 全部 あつめると 何かが 起きるかも？\n\n'
         sfx('clear')
     else:
         big_text.text = 'ゲームオーバー'
         big_text.color = color.hex('#ff5a46')
+        cause = g.last_hit if g.hp <= 0 else 'lava'
+        words, hints = DEATH_HINTS[cause]
+        head = f'{words}\nヒント: {random.choice(hints)}\n\n'
         sfx('over')
-    sub_text.text = (f'むずかしさ: {name}\n\n'
-                     f'時間 {int(g.time)}点 + 高さ {g.best}m×10 + 置いた数 {g.placed}×2'
-                     + (' + 天国 500' if result == 'clear' else '')
+    sub_text.text = (head + f'むずかしさ: {name}\n'
+                     f'時間 {int(g.time)} + 高さ {g.best}m×10 + 置いた数 {g.placed}×2 + 敵 {g.kills}×20 + 鍵 {g.keys}×300'
+                     + (' + 天国 500' if result == 'clear' else '') + (' + 真エンド 1000' if true_end else '')
                      + f'\n\nスコア  {score}' + ('   ★ 新記録！' if record else f'   （ベスト {best.get(name, 0)}）')
                      + '\n\nR で もう一度   T で タイトルへ')
     big_text.enabled = sub_text.enabled = panel.enabled = True
@@ -672,10 +1240,10 @@ def finish(result):
 
 # Esc の メニュー（授業の サンプルと 同じ しくみ）
 menu_open = False
-resume_button = Button(text='もどる', color=color.gray, scale=(0.3, 0.1), position=(0, -0.38), enabled=False)
-quit_button = Button(text='やめる', color=color.red, scale=(0.3, 0.1), position=(0, -0.62), enabled=False)
+resume_button = Button(text='もどる', color=color.gray, scale=(0.3, 0.08), position=(0, -0.18), enabled=False)
+quit_button = Button(text='やめる', color=color.red, scale=(0.3, 0.08), position=(0, -0.38), enabled=False)
 quit_button.on_click = application.quit
-full_button = Button(text='全画面 (F11)', color=color.azure, scale=(0.3, 0.1), position=(0, -0.5), enabled=False)
+full_button = Button(text='全画面 (F11)', color=color.azure, scale=(0.3, 0.08), position=(0, -0.28), enabled=False)
 
 
 def toggle_fullscreen():
@@ -706,12 +1274,92 @@ def close_menu():
 resume_button.on_click = close_menu
 
 
+# ショップ（B キー）: コインで お助けアイテムを 買う。開いている あいだは ゲームが 止まる
+shop_open = False
+shop_panel = Entity(parent=camera.ui, model='quad', scale=(1.1, 0.86), color=color.hex('#1a1426'), enabled=False)
+shop_panel.alpha = 0.92
+shop_title = Text(position=(0, 0.38), origin=(0, 0), scale=1.8, color=color.hex('#ffd24a'), enabled=False)
+shop_buttons = []
+for i, (item_name, price, desc, effect) in enumerate(SHOP_ITEMS):
+    b = Button(text=f'{i + 1}. {item_name}  {price}コイン  … {desc}', scale=(0.98, 0.07),
+               position=(0, 0.27 - i * 0.082), color=color.hex('#3a2f52'), enabled=False)
+    b.text_entity.scale *= 0.85
+    b.on_click = Func(lambda n=i: buy(n))
+    shop_buttons.append(b)
+shop_close = Button(text='とじる（B / Esc）', scale=(0.4, 0.07), position=(0, -0.36), color=color.gray, enabled=False)
+
+
+def refresh_shop():
+    shop_title.text = f'ショップ   コイン {g.coins}'
+    for b, (item_name, price, desc, effect) in zip(shop_buttons, SHOP_ITEMS):
+        b.color = color.hex('#3a6f52') if g.coins >= price else color.hex('#3a2f52')
+
+
+def open_shop():
+    global shop_open
+    shop_open = True
+    player.enabled = False
+    mouse.locked = False
+    for e in [shop_panel, shop_title, shop_close] + shop_buttons:
+        e.enabled = True
+    show_mining(False)
+    refresh_shop()
+
+
+def close_shop():
+    global shop_open
+    shop_open = False
+    for e in [shop_panel, shop_title, shop_close] + shop_buttons:
+        e.enabled = False
+    if g.state == 'play':
+        player.enabled = True
+        mouse.locked = True
+
+
+shop_close.on_click = close_shop
+
+
+def buy(n):
+    item_name, price, desc, effect = SHOP_ITEMS[n]
+    if g.coins < price:
+        say(f'コインが たりない（あと {price - g.coins}）', 1.5)
+        return
+    if effect == 'heal' and g.hp >= MAX_HP:
+        say('HP は まんたん', 1.5)
+        return
+    g.coins -= price
+    if effect == 'heal':
+        g.hp += 1
+    elif effect == 'pack':
+        g.items['wood'] += 5
+        g.items['stone'] += 5
+    elif effect == 'iron':
+        g.items['iron'] += 3
+    elif effect == 'shield':
+        g.shield = True
+    elif effect == 'stop':
+        g.lava_stop += 10
+    elif effect == 'radar':
+        g.radar = 40
+    elif effect == 'jet':
+        g.free_jet += 1
+    sfx('buy')
+    say(f'{item_name}を 買った！', 1.5)
+    refresh_shop()
+
+
 # ============================================================
 # ⑧ input(): キー・マウスを おした しゅんかんに よばれる
 # ============================================================
 def input(key):
     if key == 'f11':
         toggle_fullscreen()
+        return
+    if shop_open:
+        if key in ('b', 'escape'):
+            close_shop()
+        elif key in [str(i + 1) for i in range(len(SHOP_ITEMS))]:
+            buy(int(key) - 1)
         return
     if key == 'escape':
         close_menu() if menu_open else open_menu()
@@ -735,6 +1383,9 @@ def input(key):
             new_game()
         return
 
+    if key == 'b':
+        open_shop()
+        return
     if key in ('1', '2', '3'):
         g.mat = int(key) - 1
         sfx('pick')
@@ -743,6 +1394,14 @@ def input(key):
         g.mat = (g.mat + (1 if key == 'scroll down' else -1)) % len(MATERIALS)
     if key == 'c':
         ride_jet()
+    if key == 'f':
+        swing_sword()
+    if key == 'left mouse down' and enemy_in_aim():     # 敵を ねらって 左クリック → 剣
+        swing_sword()
+        return
+    if key == 'right mouse down' and player.camera_pivot.rotation_x > 55:   # 真下を 見て 右クリック → 積む
+        pillar()
+        return
 
     if key not in ('left mouse down', 'right mouse down'):
         return
@@ -756,7 +1415,7 @@ def input(key):
         pos = (target.key[0] + round(n.x), target.key[1] + round(n.y), target.key[2] + round(n.z))
         if pos in blocks or abs(pos[0]) > HALF or abs(pos[2]) > HALF:
             return
-        # 自分の 体と 重なる 所には 置けない（ジャンプ中に 足の下なら OK）
+        # 自分の 体と 重なる 所には 置けない
         if abs(pos[0] - player.x) < 0.8 and abs(pos[2] - player.z) < 0.8 and player.y - 0.45 < pos[1] < player.y + 1.8:
             return
         mat = MATERIALS[g.mat]
@@ -773,19 +1432,29 @@ def input(key):
 # ⑨ update(): 毎フレーム よばれる
 # ============================================================
 def update():
+    dt = time.dt
     lava.y = g.lava_y - 30                              # 溶岩の 箱の 上の面 = g.lava_y
     lava.color = lerp(LAVA_COLORS[0], LAVA_COLORS[1], (math.sin(time.time() * 3) + 1) / 4)
-    update_sparks(time.dt)
-    if g.state != 'play' or menu_open:
+    update_sparks(dt)
+    update_scenery(dt)
+    if g.state != 'play' or menu_open or shop_open:
         return
-    dt = time.dt
     g.time += dt
     g.best = max(g.best, height())
     generate()
     name, mult, delay, items = DIFFICULTIES[g.diff]
+    area = area_at(height())
+    update_motes(dt, area[1])
+
+    # 空の色と 霧を、エリアの 色へ 少しずつ 近づける
+    camera.background_color = lerp(camera.background_color, area[2], min(1, dt * 1.5))
+    scene.fog_color = camera.background_color
+    scene.fog_density = area[4]
 
     # 溶岩が 上がる（時間が たつほど 速い。ときどき 波）
-    if g.time > delay:
+    if g.lava_stop > 0:
+        g.lava_stop -= dt                               # ショップの 溶岩ストップ
+    elif g.time > delay:
         speed = min(LAVA_START_SPEED + LAVA_ACCEL * (g.time - delay), LAVA_MAX_SPEED) * mult
         g.wave_timer -= dt
         if g.wave is None and g.wave_timer <= 0:
@@ -822,7 +1491,7 @@ def update():
             rocks.append(Rock(x, player.y + 14, z))
     for r in rocks[:]:
         if distance(r.position, player.position + Vec3(0, 1, 0)) < 1.0:
-            hurt()
+            hurt('rock')
             destroy(r.shadow)
             r.landed = True
         elif r.fall():
@@ -830,6 +1499,33 @@ def update():
         if getattr(r, 'landed', False):
             rocks.remove(r)
             destroy(r)
+
+    # 敵
+    if height() >= ENEMY_START:
+        g.enemy_timer -= dt
+        if g.enemy_timer <= 0 and len(enemies) < ENEMY_MAX:
+            g.enemy_timer = ENEMY_INTERVAL
+            spawn_enemy()
+    for e in enemies[:]:
+        e.step(dt)
+        can_hit = e.rest <= 0 and (e.move == 'hop' or e.mode == 'dash')
+        if can_hit and distance(e.position, player.position + Vec3(0, 0.9, 0)) < 0.9:
+            hurt('enemy')
+            away = e.position - player.position
+            e.kb = Vec3(away.x, 0.5, away.z).normalized() * 6
+            e.rest = ENEMY_REST
+            e.mode = 'chase'
+        if e.y < g.lava_y or distance(e.position, player.position) > 30:
+            enemies.remove(e)                           # 溶岩に 落ちた・遠すぎる 敵は 消す
+            destroy(e)
+
+    # 剣を ふる 動き
+    g.swing_wait = max(0, g.swing_wait - dt)
+    if g.swing > 0:
+        g.swing -= dt
+        sword.rotation_x = 25 + math.sin((1 - g.swing / 0.25) * math.pi) * 75
+    else:
+        sword.rotation_x = 25
 
     # 回復の実
     for b in berries[:]:
@@ -850,6 +1546,13 @@ def update():
         if g.jet <= 0:
             end_jet()
 
+    # 真下に 積む（Q を おしつづける / 真下を 見て 右クリックを おしつづける）
+    g.pillar_wait = max(0, g.pillar_wait - dt)
+    if g.lift is not None:
+        update_lift(dt)
+    elif held_keys['q'] or (held_keys['right mouse'] and player.camera_pivot.rotation_x > 55):
+        pillar()
+
     # ねらっている ブロックに 印
     t = aimed_block()
     highlight.enabled = t is not None
@@ -857,7 +1560,7 @@ def update():
         highlight.position = t.key
 
     # ほる: 左クリックを おしつづけると 進む。かたい ブロックほど 時間が かかる
-    if held_keys['left mouse'] and t is not None and t.kind not in UNBREAKABLE:
+    if held_keys['left mouse'] and t is not None and t.kind not in UNBREAKABLE and not enemy_in_aim():
         if t is not g.mine_block:                       # ちがう ブロックに 変えたら 最初から
             g.mine_block, g.mine_t = t, 0
         before = g.mine_t
@@ -879,14 +1582,12 @@ def update():
         highlight.color = color.white
         hand.rotation_x = 10
 
-    # 手に 持っている ブロック（えらんだ 材料の 色。歩くと ゆれる）
-    hand.color = BLOCK_COLOR[MATERIALS[g.mat]]
+    # 手に 持っている ブロック（えらんだ 材料の テクスチャ。歩くと ゆれる）
+    hand.texture = TEXTURES[MATERIALS[g.mat]]
     moving = held_keys['w'] or held_keys['a'] or held_keys['s'] or held_keys['d']
     hand.y = -0.5 + (math.sin(g.time * 10) * 0.02 if moving else 0)
 
-    # エリアが かわったら 知らせる・空の 色を かえる
-    area = area_at(height())
-    camera.background_color = area[2]
+    # エリアが かわったら 知らせる
     idx = AREAS.index(area)
     if idx > g.area_idx:                                # はじめて 上の エリアに 入った
         g.area_idx = idx
@@ -897,12 +1598,25 @@ def update():
     g.invincible = max(0, g.invincible - dt)
     hurt_flash.alpha = max(0, hurt_flash.alpha - dt)
     height_text.text = f'{height()} m / {GOAL} m   {area[1]}'
-    hp_text.text = '♥' * g.hp + '♡' * (MAX_HP - g.hp)
+    hp_text.text = '♥' * g.hp + '♡' * (MAX_HP - g.hp) + ('  ◆シールド' if g.shield else '')
     item_text.text = '   '.join(('▶' if i == g.mat else '  ') + f'{NAME[m]} {g.items[m]}' for i, m in enumerate(MATERIALS))
-    ok = all(g.items[k] >= v for k, v in JET_COST.items())
+    ok = g.free_jet > 0 or all(g.items[k] >= v for k, v in JET_COST.items())
     jet_text.text = 'ジェット機: C で 発進！' if ok else f'ジェット機: 石{JET_COST["stone"]}・鉄{JET_COST["iron"]} で 乗れる'
+    coin_text.text = f'コイン {g.coins}  (B ショップ)   鍵 ' + '●' * g.keys + '○' * (3 - g.keys)
+    if g.radar > 0:
+        g.radar -= dt
+        radar_text.text = key_direction()
+    else:
+        radar_text.text = ''
+        for e in enemies:                               # 見えない 所の 敵を 知らせる
+            d = e.position - camera.world_position
+            if d.length() < 5 and d.normalized().dot(camera.forward) < 0.3:
+                radar_text.text = '後ろに 敵！'
+                break
     gap = player.y - g.lava_y
-    if g.time < delay:
+    if g.lava_stop > 0:
+        lava_text.text = f' 溶岩ストップ中 あと {int(g.lava_stop) + 1} 秒 '
+    elif g.time < delay:
         lava_text.text = f' 溶岩が 動きだすまで あと {int(delay - g.time) + 1} 秒 '
     else:
         lava_text.text = f' 溶岩まで {max(0, int(gap))} m '
