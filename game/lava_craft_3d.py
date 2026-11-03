@@ -8,7 +8,7 @@
 #
 #  操作:
 #    WASD     … 移動          マウス … 見回す       Space … ジャンプ
-#    左クリック … ブロックを ほる（資材が 手に入る）
+#    左クリック … おしつづけて ブロックを ほる（かたい ブロックほど 時間が かかる）
 #    右クリック … ブロックを 置く（真下を 向いて ジャンプ中に 置くと 上に のぼれる）
 #    1 / 2 / 3 … 置く 材料を えらぶ（木・石・鉄）   ※タイトルでは むずかしさを えらぶ
 #    C        … ジェット機（石と鉄を 使って 一気に 上へ）
@@ -74,6 +74,7 @@ SOUNDS = {
     'clear': ('sine',   [(523, 0.12), (659, 0.12), (784, 0.12), (1047, 0.35)]),
     'over':  ('sine',   [(392, 0.18), (330, 0.18), (262, 0.4)]),
     'pick':  ('sine',   [(990, 0.05)]),
+    'tick':  ('noise',  [(0, 0.03)]),                      # ほっている 途中の コツコツ音
 }
 
 
@@ -139,6 +140,9 @@ WAVE_TIME = 3               # 波が つづく 時間（秒）
 WAVE_POWER = 4              # 波のあいだ 溶岩が 何倍 速くなるか
 WOOD_BURN = 3               # 置いた 木は、溶岩から この高さまで 近づくと 燃える
 
+# かたさ: ほりおわるまでに 左クリックを おしつづける 時間（秒）
+HARDNESS = {'cloud': 0.2, 'rubble': 0.35, 'wood': 0.3, 'stone': 0.7, 'iron': 1.5}
+
 ROCK_INTERVAL = 5           # 落石の 間かく（秒）
 ROCK_START = 8              # この 高さ（m）より 上で 落石が はじまる
 
@@ -156,22 +160,24 @@ BEST_FILE = os.path.join(HERE, 'lava_craft_3d_best.json')
 
 # エリア: (はじまる 高さ m, 名前, 空の色, 資材の 出やすさ)
 AREAS = [
-    (0,  '洞窟', color.hex('#1c1424'), {'wood': 0.15, 'stone': 0.60, 'iron': 0.25}),
-    (30, '森',   color.hex('#78b0dc'), {'wood': 0.60, 'stone': 0.25, 'iron': 0.15}),
-    (60, '空',   color.hex('#5a8ee6'), {'wood': 0.20, 'stone': 0.35, 'iron': 0.45}),
-    (90, '天国', color.hex('#ffe6c8'), {'wood': 0.15, 'stone': 0.30, 'iron': 0.55}),
+#   鉄は 大事な 鉱石なので 少なめ。そのかわり まわりを くず石で 囲ってある
+    (0,  '洞窟', color.hex('#1c1424'), {'wood': 0.20, 'stone': 0.68, 'iron': 0.12}),
+    (30, '森',   color.hex('#78b0dc'), {'wood': 0.60, 'stone': 0.30, 'iron': 0.10}),
+    (60, '空',   color.hex('#5a8ee6'), {'wood': 0.25, 'stone': 0.50, 'iron': 0.25}),
+    (90, '天国', color.hex('#ffe6c8'), {'wood': 0.20, 'stone': 0.50, 'iron': 0.30}),
 ]
 BLOCK_COLOR = {
     'ground': color.hex('#5a5664'),     # 一番下の 地面（こわせない）
     'wood':   color.hex('#d08c4c'),
     'stone':  color.hex('#a8a8b4'),
     'iron':   color.hex('#eef1fa'),
+    'rubble': color.hex('#6e6258'),     # くず石（ほっても 資材に ならない。鉄の まわりに ある）
     'cloud':  color.hex('#f4f6ff'),     # 雲（乗れるけど ほれない）
     'gold':   color.hex('#ffd24a'),     # 天国の 床（ほれない）
 }
-NAME = {'wood': '木', 'stone': '石', 'iron': '鉄'}
+NAME = {'wood': '木', 'stone': '石', 'iron': '鉄', 'rubble': 'くず石', 'cloud': '雲'}
 MATERIALS = ['wood', 'stone', 'iron']
-UNBREAKABLE = ('ground', 'cloud', 'gold')
+UNBREAKABLE = ('ground', 'gold')
 
 
 def area_at(height):
@@ -190,11 +196,34 @@ def area_at(height):
 blocks = {}
 
 
+def make_shaded_cube():
+    """面ごとに 明るさを 決めた 立方体（上の面が いちばん 明るく、下の面も 真っ暗に ならない）
+       → 見上げても 見下ろしても、ブロックの 形と さかい目が 分かる"""
+    s = 0.5
+    faces = [   # (4つの 角, 明るさ)
+        ([(-s, s, -s), (-s, s, s), (s, s, s), (s, s, -s)], 1.00),      # 上
+        ([(-s, -s, -s), (s, -s, -s), (s, -s, s), (-s, -s, s)], 0.68),  # 下
+        ([(s, -s, -s), (s, s, -s), (s, s, s), (s, -s, s)], 0.86),      # 右
+        ([(-s, -s, -s), (-s, -s, s), (-s, s, s), (-s, s, -s)], 0.80),  # 左
+        ([(-s, -s, s), (s, -s, s), (s, s, s), (-s, s, s)], 0.76),      # 奥
+        ([(-s, -s, -s), (-s, s, -s), (s, s, -s), (s, -s, -s)], 0.92),  # 手前
+    ]
+    verts, tris, uvs, cols = [], [], [], []
+    for corners, light in faces:
+        n = len(verts)
+        verts += corners
+        tris += [n, n + 1, n + 2, n, n + 2, n + 3]
+        uvs += [(0, 0), (0, 1), (1, 1), (1, 0)]
+        cols += [Vec4(light, light, light, 1)] * 4
+    return Mesh(vertices=verts, triangles=tris, uvs=uvs, colors=cols)
+
+
+
 class Block(Entity):
     def __init__(self, position, kind, placed=False):
         c = lerp(BLOCK_COLOR[kind], color.black, random.uniform(0, 0.12))   # 少しずつ 色を 変えると 自然に 見える
-        super().__init__(model='cube', texture='white_cube', position=position, color=c, collider='box',
-                         shader=basic_lighting_shader)
+        super().__init__(model=make_shaded_cube(), texture='white_cube', position=position, color=c, collider='box',
+                         double_sided=True)
         self.key = position                             # 辞書の キー (x, y, z)
         self.kind = kind
         self.placed = placed                            # 自分で 置いた ブロックなら True
@@ -220,6 +249,18 @@ def remove_block(pos):
     b = blocks.pop(pos, None)
     if b:
         destroy(b)
+
+
+def add_resource(x, y, z, height):
+    """資材の ブロックを 置く。鉄（大事な 鉱石）なら、まわりを くず石で 囲う"""
+    kind = random_resource(height)
+    add_block(x, y, z, kind)
+    if kind != 'iron':
+        return
+    for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+        nx, ny, nz = x + dx, y + dy, z + dz
+        if abs(nx) <= HALF and abs(nz) <= HALF and 1 <= ny < GOAL:
+            add_block(nx, ny, nz, 'rubble')             # もう ブロックが ある 所には 置かれない
 
 
 def random_resource(height):
@@ -253,15 +294,18 @@ def make_layer(y):
     for i in range(-HALF, HALF + 1):
         for x, z in ((i, -HALF), (i, HALF), (-HALF, i), (HALF, i)):
             if random.random() < 0.3:
-                add_block(x, y, z, random_resource(y))
-    # 3だんごとに 浮き島
-    if y % 3 == 0:
+                add_resource(x, y, z, y)
+    # 5だんごとに 浮き島
+    if y % 5 == 0:
         cx, cz = random.randint(-2, 2), random.randint(-2, 2)
         size = random.randint(1, 2)
         cloud = area_at(y)[1] == '空' and random.random() < 0.5
         for x in range(cx - size, cx + size):
             for z in range(cz - size, cz + size):
-                add_block(x, y, z, 'cloud' if cloud else random_resource(y))
+                if cloud:
+                    add_block(x, y, z, 'cloud')
+                else:
+                    add_resource(x, y, z, y)
         if random.random() < 0.25:                      # ときどき 回復の実
             berries.append(Entity(model='sphere', color=color.hex('#e83c5a'), scale=0.45,
                                   position=(cx, y + 0.8, cz)))
@@ -296,7 +340,7 @@ def make_scenery(y):
         a = random.uniform(-HALF - 6, HALF + 6)
         x, z = (side * d, a) if random.random() < 0.5 else (a, side * d)
         if area == '洞窟':                              # 光る 結晶
-            c = random.choice(('#9b6bff', '#4fd6ff', '#ff6bd6'))
+            c = random.choice(("#d5c2ff", '#4fd6ff', '#ff6bd6'))
             deco(y, model='cube', color=color.hex(c), position=(x, y + 1, z),
                  scale=(0.6, random.uniform(1.5, 3), 0.6), rotation=(random.uniform(-20, 20), 0, random.uniform(-25, 25)))
         elif area == '森':                              # 木（みき と 葉っぱ）
@@ -328,6 +372,12 @@ lava = Entity(model='cube', color=color.hex('#ff5a14'), scale=(HALF * 2 + 3, 60,
 LAVA_COLORS = (color.hex('#ff4a10'), color.hex('#ffa030'))           # 溶岩の 色（2色の あいだで ゆらめく）
 highlight = Entity(model='cube', color=color.white, scale=1.02)      # ねらっている ブロックの 印
 highlight.alpha = 0.25
+# ほっている ときの 進み具合バー（画面の まん中の 少し下）
+mine_back = Entity(parent=camera.ui, model='quad', position=(0, -0.09), scale=(0.18, 0.014), color=color.black, enabled=False)
+mine_back.alpha = 0.55
+mine_fill = Entity(parent=camera.ui, model='quad', origin=(-0.5, 0), position=(-0.09, -0.09), scale=(0.001, 0.014),
+                   color=color.hex('#ffd24a'), enabled=False)
+mine_label = Text(position=(0, -0.055), origin=(0, 0), scale=0.9, enabled=False)
 hand = Entity(parent=camera, model='cube', texture='white_cube', position=(0.62, -0.5, 1.5),
               scale=0.22, rotation=(10, -25, 0), shader=basic_lighting_shader)   # 手に 持っている ブロック
 
@@ -440,6 +490,25 @@ def update_sparks(dt):
             destroy(e)
 
 
+def show_mining(on, block=None, rate=0):
+    """ほっている 進み具合を 画面に 出す（on=False で 消す）"""
+    mine_back.enabled = mine_fill.enabled = mine_label.enabled = on
+    if on:
+        mine_fill.scale_x = max(0.001, 0.18 * rate)
+        mine_label.text = f'{NAME[block.kind]}  かたさ {HARDNESS[block.kind]}秒'
+
+
+def mine(target):
+    """ブロックを ほりおえた ときに よぶ"""
+    if target.kind in g.items:
+        g.items[target.kind] += 1
+    else:                                               # くず石・雲は 資材に ならない
+        say(f'{NAME[target.kind]}は 資材に ならない', 1.2)
+    burst(target.key, target.color)
+    sfx('mine')
+    remove_block(target.key)
+
+
 def hurt():
     if g.invincible > 0:
         return
@@ -511,6 +580,8 @@ def new_game():
     g.jet = 0
     g.message_time = 0
     g.area_idx = 0
+    g.mine_block = None                                 # いま ほっている ブロック
+    g.mine_t = 0                                        # ほりはじめてからの 時間
     player.position = (0, 1, 0)
     player.rotation = (0, 0, 0)
     player.gravity = 1
@@ -530,6 +601,7 @@ def show_title():
                      '\n\n1 / 2 / 3 で むずかしさを えらんで、クリック か Enter で スタート\n'
                      'WASD 移動 ・ 左クリック ほる ・ 右クリック 置く ・ C ジェット機')
     camera.background_color = AREAS[0][2]
+    show_mining(False)
     big_text.enabled = sub_text.enabled = panel.enabled = True
     for e in hud:
         e.enabled = False
@@ -571,6 +643,7 @@ def finish(result):
     mouse.locked = False
     for e in hud:
         e.enabled = False
+    show_mining(False)
     warn_text.enabled = False
     lava_glow.alpha = 0
     name = DIFFICULTIES[g.diff][0]
@@ -663,13 +736,8 @@ def input(key):
     target = aimed_block()
     if target is None:
         return
-    if key == 'left mouse down':                        # ほる
-        if target.kind in UNBREAKABLE:
-            return
-        g.items[target.kind] += 1
-        burst(target.key, target.color)
-        sfx('mine')
-        remove_block(target.key)
+    if key == 'left mouse down' and target.kind in UNBREAKABLE:   # ほるのは update() で（おしつづける）
+        say('この ブロックは ほれない', 1.2)
     if key == 'right mouse down':                       # 置く（ねらった 面の となり）
         n = mouse.normal
         pos = (target.key[0] + round(n.x), target.key[1] + round(n.y), target.key[2] + round(n.z))
@@ -774,6 +842,29 @@ def update():
     highlight.enabled = t is not None
     if t:
         highlight.position = t.key
+
+    # ほる: 左クリックを おしつづけると 進む。かたい ブロックほど 時間が かかる
+    if held_keys['left mouse'] and t is not None and t.kind not in UNBREAKABLE:
+        if t is not g.mine_block:                       # ちがう ブロックに 変えたら 最初から
+            g.mine_block, g.mine_t = t, 0
+        before = g.mine_t
+        g.mine_t += dt
+        if int(before / 0.25) != int(g.mine_t / 0.25):
+            sfx('tick')
+        rate = min(1, g.mine_t / HARDNESS[t.kind])
+        show_mining(True, t, rate)
+        highlight.alpha = 0.25 + rate * 0.5             # ほるほど 印が こくなる（ひびの かわり）
+        highlight.color = lerp(color.white, color.black, rate * 0.6)
+        hand.rotation_x = 10 + math.sin(g.time * 25) * 20   # 手を ふる
+        if rate >= 1:
+            mine(t)
+            g.mine_block = None
+    else:
+        g.mine_block, g.mine_t = None, 0
+        show_mining(False)
+        highlight.alpha = 0.25
+        highlight.color = color.white
+        hand.rotation_x = 10
 
     # 手に 持っている ブロック（えらんだ 材料の 色。歩くと ゆれる）
     hand.color = BLOCK_COLOR[MATERIALS[g.mat]]
