@@ -12,7 +12,8 @@
 #    右クリック … ブロックを 置く（真下を 向いて ジャンプ中に 置くと 上に のぼれる）
 #    1 / 2 / 3 … 置く 材料を えらぶ（木・石・鉄）   ※タイトルでは むずかしさを えらぶ
 #    C        … ジェット機（石と鉄を 使って 一気に 上へ）
-#    Esc      … メニュー（もどる / やめる）
+#    Esc      … メニュー（もどる / 全画面 / やめる）
+#    F11      … 全画面 ⇔ ウィンドウ を 切りかえる（いつでも）
 #
 #  プログラムの つくり（上から 順番に 読めば わかるように 並べてある）
 #    ① 準備        … Ursina を 起動して、日本語の フォントと 効果音を 用意する
@@ -599,7 +600,7 @@ def show_title():
     big_text.color = color.hex('#ffc850')
     sub_text.text = ('～ 天国まで 逃げろ！ ～\n\n' + '\n'.join(lines) +
                      '\n\n1 / 2 / 3 で むずかしさを えらんで、クリック か Enter で スタート\n'
-                     'WASD 移動 ・ 左クリック ほる ・ 右クリック 置く ・ C ジェット機')
+                     'WASD 移動 ・ 左クリック ほる ・ 右クリック 置く ・ C ジェット機 ・ F11 全画面')
     camera.background_color = AREAS[0][2]
     show_mining(False)
     big_text.enabled = sub_text.enabled = panel.enabled = True
@@ -672,8 +673,17 @@ def finish(result):
 # Esc の メニュー（授業の サンプルと 同じ しくみ）
 menu_open = False
 resume_button = Button(text='もどる', color=color.gray, scale=(0.3, 0.1), position=(0, -0.38), enabled=False)
-quit_button = Button(text='やめる', color=color.red, scale=(0.3, 0.1), position=(0, -0.5), enabled=False)
+quit_button = Button(text='やめる', color=color.red, scale=(0.3, 0.1), position=(0, -0.62), enabled=False)
 quit_button.on_click = application.quit
+full_button = Button(text='全画面 (F11)', color=color.azure, scale=(0.3, 0.1), position=(0, -0.5), enabled=False)
+
+
+def toggle_fullscreen():
+    """全画面 ⇔ ウィンドウ（ゲーム中は マウスが 固定されて ウィンドウの 拡大ボタンを おせないので キーで 切りかえる）"""
+    window.fullscreen = not window.fullscreen
+
+
+full_button.on_click = toggle_fullscreen
 
 
 def open_menu():
@@ -681,13 +691,13 @@ def open_menu():
     menu_open = True
     player.enabled = False
     mouse.locked = False
-    resume_button.enabled = quit_button.enabled = True
+    resume_button.enabled = quit_button.enabled = full_button.enabled = True
 
 
 def close_menu():
     global menu_open
     menu_open = False
-    resume_button.enabled = quit_button.enabled = False
+    resume_button.enabled = quit_button.enabled = full_button.enabled = False
     if g.state == 'play':
         player.enabled = True
         mouse.locked = True
@@ -700,6 +710,9 @@ resume_button.on_click = close_menu
 # ⑧ input(): キー・マウスを おした しゅんかんに よばれる
 # ============================================================
 def input(key):
+    if key == 'f11':
+        toggle_fullscreen()
+        return
     if key == 'escape':
         close_menu() if menu_open else open_menu()
         return
